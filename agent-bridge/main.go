@@ -55,10 +55,10 @@ func main() {
 	if poolContractID == "" {
 		poolContractID = "CCNF3JMO7MO5PSR7AS4GT3DKZU7MLDN5WS2ML7RWOGMGPLXTT7HXRY7L"
 	}
-	// Default settlement token: USDC on testnet
+	// Default settlement token: USDC on testnet (C... contract address)
 	settlementToken := os.Getenv("SETTLEMENT_TOKEN")
 	if settlementToken == "" {
-		settlementToken = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+		settlementToken = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
 	}
 
 	var sorobanClient *soroban.Client
@@ -82,11 +82,17 @@ func main() {
 
 	// Wire the soroban client into the liquidation engine so settlements go
 	// directly on-chain without an extra HTTP round-trip.
+	// The settle func receives a session token, not a Stellar address — look it
+	// up from the store before calling SettleTrade.
 	if sorobanClient != nil {
-		token := settlementToken
+		tok := settlementToken
 		eng.SetSettleFunc(func(bCtx context.Context, userToken, _ string, pnl float64) error {
+			conn := s.GetConnection(userToken)
+			if conn == nil || conn.AccountID == "" {
+				return fmt.Errorf("liquidation: no Stellar address for token %s", userToken)
+			}
 			pnlScaled := int64(pnl * float64(soroban.ScaleFactor))
-			return sorobanClient.SettleTrade(bCtx, userToken, pnlScaled, token)
+			return sorobanClient.SettleTrade(bCtx, conn.AccountID, pnlScaled, tok)
 		})
 	}
 
@@ -99,7 +105,12 @@ func main() {
 	skillsH := &handler.SkillsHandler{Store: s}
 	proxyH := &handler.ProxyHandler{Store: s, FrontendURL: frontendURL}
 	ctxH := &handler.ContextHandler{Store: s}
-	ordersH := &handler.OrdersHandler{Engine: eng}
+	ordersH := &handler.OrdersHandler{
+		Engine:          eng,
+		Store:           s,
+		Soroban:         sorobanClient,
+		SettlementToken: settlementToken,
+	}
 	pricesH := &handler.PricesHandler{Engine: eng}
 	adminH := &handler.AdminHandler{Soroban: sorobanClient}
 

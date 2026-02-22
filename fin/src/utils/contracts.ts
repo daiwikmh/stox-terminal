@@ -1,235 +1,198 @@
 /**
- * Direct Soroban contract calls for user-signed operations.
+ * Soroban contract helpers for user-signed operations.
  *
- * Uses stellar-sdk (v13) which is already installed.
- * All monetary amounts use 7 decimal places (ScaleFactor = 10_000_000).
+ * Uses VaultClient / LeverageClient (generated bindings) for simulation +
+ * transaction assembly, then submits signed XDR via raw JSON-RPC fetch.
  *
- * Flow for write operations:
- *   buildTxXdr(user, contract, method, args)   → unsigned assembled tx XDR
- *   wallet.signTransaction(xdr, passphrase)     → signed XDR
- *   submitAndWait(signedXdr)                    → polls until confirmed
- *
- * Flow for read operations:
- *   simulateRead(user, contract, method, args)  → ScVal result
+ * WHY raw fetch for submission:
+ *   stellar-sdk v13 ships stellar-base v13.1.0 internally, but the Stellar
+ *   testnet runs protocol 22 which adds XDR types unknown to v13. After Freighter
+ *   returns the signed envelope, stellar-base v13's fromXDR fails with
+ *   "Bad union switch: 4". Submitting via fetch avoids that parse step entirely.
  */
-import {
-  Contract,
-  TransactionBuilder,
-  nativeToScVal,
-  scValToNative,
-  SorobanRpc,
-  Networks,
-  xdr,
-} from 'stellar-sdk';
+import { Networks } from 'stellar-sdk';
+import type { ClientOptions } from 'stellar-sdk/contract';
+import { VaultClient, VAULT_CONTRACT_ID } from './vault_client';
+import { LeverageClient, LEVERAGE_CONTRACT_ID } from './leverage_client';
 
-// ── Contract addresses ────────────────────────────────────────────────────────
+export { VAULT_CONTRACT_ID, LEVERAGE_CONTRACT_ID };
+export const USDC_CONTRACT      = 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA';
+export const XLM_CONTRACT       = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC';
+export const NETWORK_PASSPHRASE = Networks.TESTNET;
 
-export const VAULT_CONTRACT   = 'CCNK5O3FFCOC5KEBRK6ORUUPPHYDUITTH2XCLLG7P2IBQRX2L6HXJFWG';
-export const LEVERAGE_CONTRACT = 'CCNF3JMO7MO5PSR7AS4GT3DKZU7MLDN5WS2ML7RWOGMGPLXTT7HXRY7L';
-export const USDC_CONTRACT    = 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA';
-export const XLM_CONTRACT     = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC';
+const RPC_URL = 'https://soroban-testnet.stellar.org';
+const SCALE   = BigInt(10_000_000);
 
-export const NETWORK_PASSPHRASE = Networks.TESTNET; // "Test SDF Network ; September 2015"
-const RPC_URL       = 'https://soroban-testnet.stellar.org';
-const SCALE         = 10_000_000;
+// ── Scale helpers ─────────────────────────────────────────────────────────────
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function getRPC() {
-  return new SorobanRpc.Server(RPC_URL);
+function toI128(human: number): bigint {
+  return BigInt(Math.round(human * Number(SCALE)));
 }
 
-function addrScVal(addr: string): xdr.ScVal {
-  return nativeToScVal(addr, { type: 'address' });
+function fromI128(raw: bigint | number | undefined): number {
+  if (raw === undefined) return 0;
+  return Number(raw) / Number(SCALE);
 }
 
-/** Convert a human-scale float to a 7-decimal i128 ScVal (positive only). */
-function amountScVal(human: number): xdr.ScVal {
-  return nativeToScVal(BigInt(Math.round(human * SCALE)), { type: 'i128' });
-}
+// ── Raw JSON-RPC submit (bypasses stellar-base fromXDR) ───────────────────────
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// ── Core: build unsigned assembled tx XDR ────────────────────────────────────
-
-/**
- * Build, simulate, and assemble a Soroban contract call.
- * Returns the base64 XDR of the assembled (ready-to-sign) transaction.
- */
-async function buildTxXdr(
-  userAddress: string,
-  contractId: string,
-  method: string,
-  args: xdr.ScVal[],
-): Promise<string> {
-  const server   = getRPC();
-  const contract = new Contract(contractId);
-  const account  = await server.getAccount(userAddress);
-
-  const op = contract.call(method, ...args);
-  const tx = new TransactionBuilder(account, {
-    fee: '100',
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(op)
-    .setTimeout(180)
-    .build();
-
-  const simResult = await server.simulateTransaction(tx);
-
-  if ('error' in simResult) {
-    throw new Error(`Simulation failed: ${(simResult as any).error}`);
-  }
-  if (!SorobanRpc.Api.isSimulationSuccess(simResult)) {
-    throw new Error(`Simulation did not succeed`);
-  }
-
-  // assembleTransaction patches in resource fees + footprint
-  const assembled = SorobanRpc.assembleTransaction(tx, simResult).build();
-  return assembled.toXDR();
+async function jsonRpc(method: string, params: object) {
+  const res = await fetch(RPC_URL, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+  return res.json();
 }
-
-// ── Core: simulate read-only and extract retval ───────────────────────────────
-
-async function simulateRead(
-  userAddress: string,
-  contractId: string,
-  method: string,
-  args: xdr.ScVal[],
-): Promise<xdr.ScVal | null> {
-  const server   = getRPC();
-  const contract = new Contract(contractId);
-  const account  = await server.getAccount(userAddress);
-
-  const op = contract.call(method, ...args);
-  const tx = new TransactionBuilder(account, {
-    fee: '100',
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(op)
-    .setTimeout(180)
-    .build();
-
-  const simResult = await server.simulateTransaction(tx);
-
-  if ('error' in simResult) return null;
-  if (!SorobanRpc.Api.isSimulationSuccess(simResult)) return null;
-
-  return (simResult as SorobanRpc.Api.SimulateTransactionSuccessResponse)
-    .result?.retval ?? null;
-}
-
-// ── Submit + poll ─────────────────────────────────────────────────────────────
 
 /**
  * Submit a signed transaction XDR and poll until confirmed.
- * Throws on FAILED or 90 s timeout.
+ * Uses raw JSON-RPC so stellar-base never attempts to re-parse the signed XDR.
  */
-export async function submitAndWait(signedXdr: string): Promise<void> {
-  const server = getRPC();
-  const tx     = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
+async function submitAndWait(signedXdr: string): Promise<void> {
+  const sendJson = await jsonRpc('sendTransaction', { transaction: signedXdr });
+  const hash     = sendJson?.result?.hash;
 
-  const sendResult = await server.sendTransaction(tx as any);
-  if (sendResult.status === 'ERROR') {
-    throw new Error(`Submit failed: ${JSON.stringify((sendResult as any).errorResult ?? sendResult)}`);
+  if (!hash) {
+    throw new Error(`sendTransaction failed: ${JSON.stringify(sendJson?.result ?? sendJson)}`);
+  }
+  if (sendJson?.result?.status === 'ERROR') {
+    throw new Error(`sendTransaction error: ${JSON.stringify(sendJson.result.errorResultXdr ?? sendJson.result)}`);
   }
 
-  const { hash } = sendResult;
-  const deadline  = Date.now() + 90_000;
-
+  const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     await sleep(3_000);
-    const res = await server.getTransaction(hash);
-    if (res.status === 'SUCCESS') return;
-    if (res.status === 'FAILED')  throw new Error(`Transaction failed: ${hash}`);
+    const pollJson = await jsonRpc('getTransaction', { hash });
+    const status   = pollJson?.result?.status;
+    if (status === 'SUCCESS') return;
+    if (status === 'FAILED')  throw new Error(`Transaction FAILED on-chain: ${hash}`);
     // NOT_FOUND → still pending
   }
   throw new Error(`Transaction confirmation timeout: ${hash}`);
 }
 
-// ── AgentVault: user-signed operations ───────────────────────────────────────
+// ── WalletSignFn adapter ──────────────────────────────────────────────────────
+//
+// ContractClient.signTransaction expects: (xdr, opts?) => { signedTxXdr }
+// useWallet().signTransaction is:         (xdr, passphrase) => string
+//
+// We build the assembled tx XDR ourselves, hand it to the wallet, then submit
+// via raw fetch — never passing the signed XDR back to stellar-base.
 
-/** Deposit `amount` of `token` into the AgentVault on behalf of `user`. */
+export type WalletSignFn = (xdr: string, passphrase: string) => Promise<string>;
+
+// ── Client factories ──────────────────────────────────────────────────────────
+
+function vaultClient(user: string): VaultClient {
+  return new VaultClient({
+    contractId:        VAULT_CONTRACT_ID,
+    networkPassphrase: NETWORK_PASSPHRASE,
+    rpcUrl:            RPC_URL,
+    publicKey:         user,
+  });
+}
+
+function leverageClient(user: string): LeverageClient {
+  return new LeverageClient({
+    contractId:        LEVERAGE_CONTRACT_ID,
+    networkPassphrase: NETWORK_PASSPHRASE,
+    rpcUrl:            RPC_URL,
+    publicKey:         user,
+  });
+}
+
+// ── Write operations (simulate → toXDR → wallet sign → raw submit) ────────────
+
+async function signAndSubmit(
+  // The assembled-transaction XDR (from tx.toXDR() or tx.built!.toXDR())
+  txXdr:    string,
+  walletSign: WalletSignFn,
+): Promise<void> {
+  const signedXdr = await walletSign(txXdr, NETWORK_PASSPHRASE);
+  await submitAndWait(signedXdr);
+}
+
+/** Deposit `amount` USDC into the AgentVault. */
 export async function vaultDeposit(
-  user: string, token: string, amount: number,
-): Promise<string> {
-  return buildTxXdr(user, VAULT_CONTRACT, 'deposit', [
-    addrScVal(user), addrScVal(token), amountScVal(amount),
-  ]);
+  user: string, token: string, amount: number, walletSign: WalletSignFn,
+): Promise<void> {
+  const tx = await vaultClient(user).deposit({ user, token, amount: toI128(amount) });
+  await signAndSubmit(tx.toXDR(), walletSign);
 }
 
-/** Withdraw `amount` of `token` from the AgentVault. */
+/** Withdraw `amount` USDC from the AgentVault. */
 export async function vaultWithdraw(
-  user: string, token: string, amount: number,
-): Promise<string> {
-  return buildTxXdr(user, VAULT_CONTRACT, 'withdraw', [
-    addrScVal(user), addrScVal(token), amountScVal(amount),
-  ]);
+  user: string, token: string, amount: number, walletSign: WalletSignFn,
+): Promise<void> {
+  const tx = await vaultClient(user).withdraw({ user, token, amount: toI128(amount) });
+  await signAndSubmit(tx.toXDR(), walletSign);
 }
 
-/** Read the vault balance (human units). */
-export async function getVaultBalance(user: string, token: string): Promise<number> {
-  const val = await simulateRead(user, VAULT_CONTRACT, 'get_balance', [
-    addrScVal(user), addrScVal(token),
-  ]);
-  if (!val) return 0;
-  const raw = scValToNative(val) as bigint | number;
-  return Number(raw) / SCALE;
-}
-
-// ── LeveragePool: user-signed collateral operations ───────────────────────────
-
-/** Deposit `amount` of `token` into the LeveragePool as free collateral. */
+/** Deposit `amount` USDC as free collateral into the LeveragePool. */
 export async function depositCollateral(
-  user: string, token: string, amount: number,
-): Promise<string> {
-  return buildTxXdr(user, LEVERAGE_CONTRACT, 'deposit_collateral', [
-    addrScVal(user), addrScVal(token), amountScVal(amount),
-  ]);
+  user: string, token: string, amount: number, walletSign: WalletSignFn,
+): Promise<void> {
+  const tx = await leverageClient(user).deposit_collateral({ user, token, amount: toI128(amount) });
+  await signAndSubmit(tx.toXDR(), walletSign);
 }
 
-/** Withdraw `amount` of `token` from free collateral. */
+/** Withdraw `amount` USDC from free collateral. */
 export async function withdrawCollateral(
-  user: string, token: string, amount: number,
-): Promise<string> {
-  return buildTxXdr(user, LEVERAGE_CONTRACT, 'withdraw_collateral', [
-    addrScVal(user), addrScVal(token), amountScVal(amount),
-  ]);
+  user: string, token: string, amount: number, walletSign: WalletSignFn,
+): Promise<void> {
+  const tx = await leverageClient(user).withdraw_collateral({ user, token, amount: toI128(amount) });
+  await signAndSubmit(tx.toXDR(), walletSign);
 }
 
-/** Read free collateral balance (human units). */
+// ── Read operations (simulation only, no signing needed) ──────────────────────
+
+// Dummy read-only publicKey — any valid G address works for simulation
+const READ_ONLY_KEY = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+
+/** Read the total terminal pool backing payout reserves (in human USDC units). */
+export async function getTerminalPool(tokenAddr: string): Promise<number> {
+  const tx = await new VaultClient({
+    contractId:        VAULT_CONTRACT_ID,
+    networkPassphrase: NETWORK_PASSPHRASE,
+    rpcUrl:            RPC_URL,
+    publicKey:         READ_ONLY_KEY,
+  }).get_terminal_pool({ token: tokenAddr });
+  return fromI128(tx.result as bigint);
+}
+
+/** Read vault balance in human USDC units. */
+export async function getVaultBalance(user: string, token: string): Promise<number> {
+  const tx = await vaultClient(user).get_balance({ user, token });
+  return fromI128(tx.result as bigint);
+}
+
+/** Read free collateral balance in human USDC units. */
 export async function getCollateralBalance(user: string, token: string): Promise<number> {
-  const val = await simulateRead(user, LEVERAGE_CONTRACT, 'get_collateral_balance', [
-    addrScVal(user), addrScVal(token),
-  ]);
-  if (!val) return 0;
-  const raw = scValToNative(val) as bigint | number;
-  return Number(raw) / SCALE;
+  const tx = await leverageClient(user).get_collateral_balance({ user, token });
+  return fromI128(tx.result as bigint);
 }
 
-export interface Position {
-  asset_symbol: string;
-  debt_amount: number;       // human units (already scaled)
-  collateral_locked: number; // human units
-  user: string;
+export interface PositionHuman {
+  asset_symbol:      string;
+  debt_amount:       number;
+  collateral_locked: number;
+  user:              string;
 }
 
-/** Read the open synthetic position for `user`, or null if none. */
-export async function getPosition(user: string): Promise<Position | null> {
-  const val = await simulateRead(user, LEVERAGE_CONTRACT, 'get_position', [
-    addrScVal(user),
-  ]);
-  if (!val) return null;
-
-  const native = scValToNative(val) as any;
-  if (!native || typeof native !== 'object') return null;
-
+/** Read open position, or null if none. */
+export async function getPosition(user: string): Promise<PositionHuman | null> {
+  const tx  = await leverageClient(user).get_position({ user });
+  const pos = tx.result as any;
+  if (!pos) return null;
   return {
-    asset_symbol:      native.asset_symbol ?? '',
-    debt_amount:       Number(native.debt_amount ?? 0n) / SCALE,
-    collateral_locked: Number(native.collateral_locked ?? 0n) / SCALE,
-    user:              native.user ?? user,
+    asset_symbol:      pos.asset_symbol ?? '',
+    debt_amount:       fromI128(pos.debt_amount),
+    collateral_locked: fromI128(pos.collateral_locked),
+    user:              pos.user ?? user,
   };
 }
