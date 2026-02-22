@@ -17,16 +17,16 @@ const (
 //   - Long:  admin holds XLMAmount XLM on-chain (bought from SDEX).
 //   - Short: synthetic only — no SDEX execution; P&L settled on close.
 type Position struct {
-	UserToken      string  // bridge session token
-	UserAddr       string  // Stellar G... address of the trader
-	Symbol         string  // "XLM/USDC"
-	Side           Side
-	EntryPrice     float64 // USDC per XLM at open
-	XLMAmount      float64 // XLM held (long) or notional XLM (short)
-	TotalUSDC      float64 // total USDC committed (collateral + borrowed)
-	CollateralUSDC float64 // user's own collateral portion
-	Leverage       int
-	OpenTxHash     string // Horizon tx hash (long only; "" for short)
+	UserToken      string  `json:"userToken"`
+	UserAddr       string  `json:"userAddr"`
+	Symbol         string  `json:"symbol"`
+	Side           Side    `json:"side"`
+	EntryPrice     float64 `json:"entryPrice"`
+	XLMAmount      float64 `json:"xlmAmount"`
+	TotalUSDC      float64 `json:"totalUSDC"`
+	CollateralUSDC float64 `json:"collateralUSDC"`
+	Leverage       int     `json:"leverage"`
+	OpenTxHash     string  `json:"openTxHash,omitempty"`
 }
 
 // PnL computes the unrealised PnL in USDC at the given mark price.
