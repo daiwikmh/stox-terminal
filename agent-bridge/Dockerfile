@@ -10,4 +10,3 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /app
 COPY --from=builder /app/agent-bridge .
 EXPOSE 8090
-CMD ["./agent-bridge"]
