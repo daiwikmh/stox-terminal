@@ -174,7 +174,24 @@ export default function RightSidebar({
   }, []);
 
   const getAgentPrompt = useCallback(() => {
-    return `You are now connected to a Stellar DEX trading platform. Use these HTTP API endpoints to trade on the user's behalf.
+    return `# Stellar AI Trading Platform (Stoxy)
+
+**Step 0 — Security & Secrets (1Password)**
+This platform is 1Password-aware. OpenClaw can resolve secrets without plaintext exposure.
+
+Docs: https://developer.1password.com/docs/sdks/ai-agent/
+
+Secret reference syntax: https://developer.1password.com/docs/cli/secret-references/
+Service accounts / auth: https://developer.1password.com/docs/cli/service-accounts/
+CLI \`op run\` reference: https://developer.1password.com/docs/cli/reference/commands/run/
+
+The bridge resolves secrets stored as \`op://\` URIs (e.g. \`op://StellarTrading/AdminKey/credential\`).
+Run the bridge via: \`op run --env-file=.env -- go run .\`
+To run an automated session, execute commands via: \`op run -- [command]\`
+
+---
+
+You are now connected to a Stellar DEX trading platform. Use these HTTP API endpoints to trade on the user's behalf.
 
 **Authentication:** Include header \`X-Agent-Token: ${token}\` on every request.
 **Base URL:** ${BRIDGE_URL}

@@ -235,13 +235,32 @@ func (c *Client) invokeOnce(
 		return fmt.Errorf("soroban: parse resource fee: %w", err)
 	}
 
-	// ── 7. Patch the XDR envelope: set Soroban ext + updated fee ─────────────
+	// ── 7. Patch the XDR envelope: Soroban ext + fee + auth entries ──────────
 	// tx.ToXDR() returns xdr.TransactionEnvelope (value); .V1 is a *V1Envelope.
 	envelope := tx.ToXDR()
 	envelope.V1.Tx.Ext = xdr.TransactionExt{V: 1, SorobanData: &sorobanData}
 	// Total fee = Stellar base fee + Soroban resource fee + small buffer
 	envelope.V1.Tx.Fee = xdr.Uint32(txnbuild.MinBaseFee + uint32(resourceFee) + 1000)
 	envelope.V1.Signatures = nil // clear any pre-existing signatures
+
+	// Apply auth entries returned by simulation onto the InvokeHostFunction op.
+	// Without these, admin.require_auth() inside the contract panics (TRAPPED).
+	// For SOROBAN_CREDENTIALS_SOURCE_ACCOUNT entries no extra signing is needed —
+	// the source-account invoker auth is satisfied by the tx signature alone.
+	if len(simRes.Results) > 0 && len(simRes.Results[0].Auth) > 0 {
+		authEntries := make([]xdr.SorobanAuthorizationEntry, 0, len(simRes.Results[0].Auth))
+		for _, authB64 := range simRes.Results[0].Auth {
+			var entry xdr.SorobanAuthorizationEntry
+			if err = xdr.SafeUnmarshalBase64(authB64, &entry); err != nil {
+				return fmt.Errorf("soroban: decode auth entry: %w", err)
+			}
+			authEntries = append(authEntries, entry)
+		}
+		if len(envelope.V1.Tx.Operations) > 0 {
+			envelope.V1.Tx.Operations[0].Body.InvokeHostFunctionOp.Auth = authEntries
+		}
+		log.Printf("[soroban] applied %d auth entr(ies) from simulation", len(authEntries))
+	}
 
 	// ── 8. Sign ───────────────────────────────────────────────────────────────
 	txHash, err := network.HashTransactionInEnvelope(envelope, c.NetworkPassphrase)

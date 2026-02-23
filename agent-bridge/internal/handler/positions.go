@@ -110,6 +110,14 @@ func (h *PositionsHandler) Open(w http.ResponseWriter, r *http.Request) {
 	// Extract base asset symbol ("XLM" from "XLM/USDC").
 	assetSymbol := "XLM"
 
+	// Clear any stale on-chain position before opening. If a prior position
+	// exists (e.g. from a session the bridge forgot on restart), the contract
+	// returns PositionAlreadyOpen. Attempt close_position first; if no stale
+	// position exists the simulation fails fast (~1s) without submitting a tx.
+	if cerr := h.Soroban.ClosePosition(ctx, conn.AccountID, h.SettlementToken); cerr == nil {
+		log.Printf("[positions] cleared stale on-chain position for %s", conn.AccountID)
+	}
+
 	if err = h.Soroban.OpenPosition(ctx,
 		conn.AccountID, assetSymbol,
 		debtScaled, h.SettlementToken, collScaled,
@@ -190,18 +198,24 @@ func (h *PositionsHandler) Close(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[positions] close: user=%s side=%s entry=%.6f close=%.6f pnl=%.4f USDC",
 		pos.UserAddr, pos.Side, pos.EntryPrice, closePrice, pnl)
 
-	// ── 3. Settle P&L on-chain (AgentVault.settle_pnl) ───────────────────────
-	pnlScaled := int64(pnl * float64(soroban.ScaleFactor))
-	if err = h.Soroban.SettleTrade(ctx, pos.UserAddr, pnlScaled, h.SettlementToken); err != nil {
-		log.Printf("[positions] SettleTrade failed: %v", err)
-		http.Error(w, "settle_pnl failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// ── 4. Close on-chain position record (LeveragePool.close_position) ───────
+	// ── 3. Close on-chain position record (LeveragePool.close_position) ───────
+	// Do this first so pool collateral is always released regardless of PnL
+	// settlement outcome.
 	if err = h.Soroban.ClosePosition(ctx, pos.UserAddr, h.SettlementToken); err != nil {
 		log.Printf("[positions] ClosePosition failed: %v", err)
-		// Non-fatal: position is already settled financially.
+		// Non-fatal: pool collateral reconciliation may need manual review.
+	}
+
+	// ── 4. Settle P&L on-chain (AgentVault.settle_pnl) ───────────────────────
+	// Skip if PnL rounds to zero — contract returns Ok() for pnl==0 but
+	// simulation overhead isn't worth it.
+	// Non-fatal: if the user has no AgentVault balance to cover a small loss,
+	// we still allow the close rather than leaving the position stuck.
+	pnlScaled := int64(pnl * float64(soroban.ScaleFactor))
+	if pnlScaled != 0 {
+		if serr := h.Soroban.SettleTrade(ctx, pos.UserAddr, pnlScaled, h.SettlementToken); serr != nil {
+			log.Printf("[positions] SettleTrade failed (non-fatal): %v", serr)
+		}
 	}
 
 	// ── 5. Remove from local store ────────────────────────────────────────────

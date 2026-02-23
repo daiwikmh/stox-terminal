@@ -56,6 +56,12 @@ type SimulateResult struct {
 	TransactionData string `json:"transactionData"` // base64 SorobanTransactionData
 	MinResourceFee  string `json:"minResourceFee"`  // stroops as decimal string
 	Error           string `json:"error,omitempty"` // non-empty if simulation failed
+	// Results[0].Auth holds the SorobanAuthorizationEntry list that must be
+	// applied to the InvokeHostFunction operation before signing.
+	Results []struct {
+		Auth []string `json:"auth"` // base64-encoded SorobanAuthorizationEntry
+		XDR  string   `json:"xdr"`
+	} `json:"results,omitempty"`
 	// RestorePreamble is present when ledger entries need restoring first.
 	RestorePreamble *struct {
 		TransactionData string `json:"transactionData"`

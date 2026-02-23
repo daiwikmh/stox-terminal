@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 
 	"agent-bridge/internal/db"
@@ -19,8 +21,33 @@ import (
 	"agent-bridge/internal/watcher"
 )
 
+// resolveSecret resolves a 1Password secret reference (op:// URI) via the
+// `op read` CLI command.  If the value does not start with "op://" or the CLI
+// is unavailable the original value is returned unchanged.
+//
+// This enables zero-plaintext secret storage: instead of writing
+//   ADMIN_SECRET=SXXXX...
+// in .env, operators can write
+//   ADMIN_SECRET=op://StellarTrading/AdminKey/credential
+// and the real secret is fetched from 1Password at startup.
+func resolveSecret(val string) string {
+	if !strings.HasPrefix(val, "op://") {
+		return val
+	}
+	out, err := exec.Command("op", "read", val).Output()
+	if err != nil {
+		log.Printf("[1password] could not resolve %q: %v — using raw value", val, err)
+		return val
+	}
+	resolved := strings.TrimSpace(string(out))
+	log.Printf("[1password] resolved secret reference %q", val)
+	return resolved
+}
+
 // loadDotEnv reads a .env file and sets any variable that is not already set
 // in the process environment.  Lines starting with # are ignored.
+// Values matching the op:// URI scheme are resolved via the 1Password CLI
+// before being written to the environment.
 func loadDotEnv(path string) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -46,7 +73,7 @@ func loadDotEnv(path string) {
 		}
 		// Only set if not already in the environment (so explicit exports win)
 		if os.Getenv(key) == "" {
-			os.Setenv(key, val)
+			os.Setenv(key, resolveSecret(val))
 		}
 	}
 }
@@ -74,7 +101,7 @@ func main() {
 		frontendURL = "http://localhost:3000"
 	}
 
-	adminSecret := os.Getenv("ADMIN_SECRET")
+	adminSecret := resolveSecret(os.Getenv("ADMIN_SECRET"))
 
 	// ── Background context for all long-running goroutines ───────────────────
 	ctx, cancel := context.WithCancel(context.Background())
