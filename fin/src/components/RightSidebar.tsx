@@ -179,11 +179,11 @@ export default function RightSidebar({
 **Step 0 — Security & Secrets (1Password)**
 This platform is 1Password-aware. OpenClaw can resolve secrets without plaintext exposure.
 
-Docs: https://developer.1password.com/docs/sdks/ai-agent/
-
-Secret reference syntax: https://developer.1password.com/docs/cli/secret-references/
-Service accounts / auth: https://developer.1password.com/docs/cli/service-accounts/
-CLI \`op run\` reference: https://developer.1password.com/docs/cli/reference/commands/run/
+1. Install the \`op\` CLI: https://developer.1password.com/docs/cli/get-started/
+2. Secret reference syntax: https://developer.1password.com/docs/cli/secret-references/
+3. Service accounts / auth: https://developer.1password.com/docs/cli/service-accounts/
+4. CLI \`op run\` reference: https://developer.1password.com/docs/cli/reference/commands/run/
+5. AI agent docs: https://developer.1password.com/docs/sdks/ai-agent/
 
 The bridge resolves secrets stored as \`op://\` URIs (e.g. \`op://StellarTrading/AdminKey/credential\`).
 Run the bridge via: \`op run --env-file=.env -- go run .\`
