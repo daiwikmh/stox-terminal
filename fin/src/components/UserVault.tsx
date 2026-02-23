@@ -25,7 +25,8 @@ const BRIDGE_URL   = process.env.NEXT_PUBLIC_AGENT_BRIDGE_URL ?? 'http://localho
 const LS_TOKEN_KEY = 'uv-bridge-token';
 
 export default function UserVault() {
-  const { address, isConnected, connectWallet, signTransaction } = useWallet();
+  const { address, isConnected, network, connectWallet, signTransaction } = useWallet();
+  const usdcContract = contracts.getUSDCContract(network);
   const [tab,    setTab]    = useState<UVTab>('pool');
   const [action, setAction] = useState<Action>('deposit');
 
@@ -54,6 +55,20 @@ export default function UserVault() {
 
   const tokenInit = useRef(false);
 
+  // Reset all state when the user switches networks
+  useEffect(() => {
+    setSdexPos(null);
+    setVBalance(null);
+    setFreeMargin(null);
+    setPoolBalance(null);
+    setMarkPrice(null);
+    setVStatus(null);
+    setTradeStatus(null);
+    setTradeXLM('');
+    setMAmount('');
+    tokenInit.current = false;
+  }, [network]);
+
   // ── Token init ─────────────────────────────────────────────────────────────
 
   // Register a token+address pair with the bridge.
@@ -63,13 +78,13 @@ export default function UserVault() {
       const res = await fetch(`${BRIDGE_URL}/api/context`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ token: tok, account_id: addr, network: 'TESTNET' }),
+        body:    JSON.stringify({ token: tok, account_id: addr, network }),
       });
       return res.ok;
     } catch {
       return false;
     }
-  }, []);
+  }, [network]);
 
   useEffect(() => {
     if (!isConnected || !address || tokenInit.current) return;
@@ -108,7 +123,7 @@ export default function UserVault() {
   /** Fetch position from the on-chain contract (source of truth). */
   const fetchOnChainPos = useCallback(async (addr: string) => {
     try {
-      const pos = await contracts.getPosition(addr);
+      const pos = await contracts.getPosition(addr, network);
       if (!pos) { setSdexPos(null); return; }
       setSdexPos({
         side:           pos.is_long ? 'long' : 'short',
@@ -119,11 +134,11 @@ export default function UserVault() {
         leverage:       pos.collateral_locked > 0
                           ? Math.round(pos.debt_amount / pos.collateral_locked)
                           : 1,
-        markPrice:      0, // filled by mark price state
-        unrealPnL:      0, // computed in render
+        markPrice:      0,
+        unrealPnL:      0,
       });
-    } catch { /* ignore */ }
-  }, []);
+    } catch (err) { console.error('[fetchOnChainPos]', err); }
+  }, [network]);
 
   const fetchMarkPrice = useCallback(async () => {
     try {
@@ -136,15 +151,15 @@ export default function UserVault() {
     if (!address) return;
     try {
       const [lpShare, cBal, pool] = await Promise.all([
-        contracts.getLPShare(address, contracts.USDC_CONTRACT),
-        contracts.getCollateralBalance(address, contracts.USDC_CONTRACT),
-        contracts.getPoolBalance(contracts.USDC_CONTRACT),
+        contracts.getLPShare(address, usdcContract, network),
+        contracts.getCollateralBalance(address, usdcContract, network),
+        contracts.getPoolBalance(usdcContract, network),
       ]);
       setVBalance(lpShare);
       setFreeMargin(cBal);
       setPoolBalance(pool);
     } catch { /* ignore */ }
-  }, [address]);
+  }, [address, usdcContract, network]);
 
   useEffect(() => {
     if (isConnected && address) {
@@ -173,7 +188,7 @@ export default function UserVault() {
     try {
       const amount = parseFloat(vAmount);
       const fn = action === 'deposit' ? contracts.lpDeposit : contracts.lpWithdraw;
-      await fn(address, contracts.USDC_CONTRACT, amount, signTransaction);
+      await fn(address, usdcContract, amount, signTransaction, network);
       setVStatus({ ok: true, msg: `${action === 'deposit' ? 'Deposited' : 'Withdrawn'} ${amount} USDC` });
       setVAmount('');
       refreshBalances();
@@ -188,7 +203,7 @@ export default function UserVault() {
     if (!address || !mAmount) return;
     setMBusy(true);
     try {
-      await contracts.depositCollateral(address, contracts.USDC_CONTRACT, parseFloat(mAmount), signTransaction);
+      await contracts.depositCollateral(address, usdcContract, parseFloat(mAmount), signTransaction, network);
       setMAmount('');
       refreshBalances();
     } catch (err) {
@@ -211,9 +226,10 @@ export default function UserVault() {
         xlmAmt,
         markPrice,
         tradeSide === 'long',
-        contracts.USDC_CONTRACT,
+        usdcContract,
         margin,
         signTransaction,
+        network,
       );
       // Show the position card immediately — don't wait for fetchOnChainPos
       setSdexPos({
@@ -239,6 +255,8 @@ export default function UserVault() {
         ? JSON.stringify(err)
         : String(err);
       setTradeStatus({ ok: false, msg });
+      // Refresh — maybe a position already exists on-chain
+      if (address) fetchOnChainPos(address);
     } finally { setTradeBusy(false); }
   };
 
@@ -249,7 +267,7 @@ export default function UserVault() {
     const closePrice = markPrice ?? sdexPos.entryPrice;
     setCloseBusy(true); setTradeStatus(null);
     try {
-      await contracts.closePosition(address, contracts.USDC_CONTRACT, closePrice, signTransaction);
+      await contracts.closePosition(address, usdcContract, closePrice, signTransaction, network);
       setTradeStatus({ ok: true, msg: `Closed @ ${closePrice.toFixed(6)}` });
       setSdexPos(null);
       refreshBalances();
@@ -264,7 +282,9 @@ export default function UserVault() {
       <div className="uv-wrapper">
         <div className="uv-header">
           <span className="uv-title">Trade</span>
-          <span className="uv-badge">Testnet</span>
+          <span className="uv-badge" style={{ color: network === 'MAINNET' ? '#00ff94' : '#facc15' }}>
+            {network === 'MAINNET' ? 'Mainnet' : 'Testnet'}
+          </span>
         </div>
         <div className="uv-connect-prompt">
           <p>Connect your wallet to deposit and trade.</p>
@@ -444,8 +464,13 @@ export default function UserVault() {
       </div>
 
       <div className="uv-footer">
-        <div className="uv-contract-row"><span>Vault</span><span>{contracts.VAULT_CONTRACT_ID.slice(0, 8)}…</span></div>
-        <div className="uv-contract-row"><span>Pool</span><span>{contracts.LEVERAGE_CONTRACT_ID.slice(0, 8)}…</span></div>
+        <div className="uv-contract-row">
+          <span style={{ color: network === 'MAINNET' ? '#00ff94' : '#facc15' }}>
+            {network === 'MAINNET' ? 'Mainnet' : 'Testnet'}
+          </span>
+          <span>{contracts.getLeverageContractId(network).slice(0, 8)}…</span>
+        </div>
+        <div className="uv-contract-row"><span>USDC</span><span>{usdcContract.slice(0, 8)}…</span></div>
       </div>
     </div>
   );
