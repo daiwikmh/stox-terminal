@@ -15,13 +15,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/keypair"
-	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -195,12 +193,8 @@ func (c *Client) invokeOnce(
 		return fmt.Errorf("soroban: parse contract id: %w", err)
 	}
 
-	// ── 3. Build unsigned transaction ─────────────────────────────────────────
-	sourceAccount := txnbuild.SimpleAccount{
-		AccountID: adminKP.Address(),
-		Sequence:  seq,
-	}
-
+	// ── 3. Build unsigned transaction for simulation ──────────────────────────
+	// The operation has no auth/ext yet; those come from simulateTransaction.
 	fnSym := xdr.ScSymbol(function)
 	invokeOp := &txnbuild.InvokeHostFunction{
 		HostFunction: xdr.HostFunction{
@@ -213,24 +207,25 @@ func (c *Client) invokeOnce(
 		},
 	}
 
-	tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
-		SourceAccount:        &sourceAccount,
+	simAccount := txnbuild.SimpleAccount{AccountID: adminKP.Address(), Sequence: seq}
+	simTx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
+		SourceAccount:        &simAccount,
 		IncrementSequenceNum: true,
 		Operations:           []txnbuild.Operation{invokeOp},
 		BaseFee:              txnbuild.MinBaseFee,
 		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewInfiniteTimeout()},
 	})
 	if err != nil {
-		return fmt.Errorf("soroban: build tx: %w", err)
+		return fmt.Errorf("soroban: build sim tx: %w", err)
 	}
 
 	// ── 4. Serialise for simulation ───────────────────────────────────────────
-	unsignedB64, err := tx.Base64()
+	unsignedB64, err := simTx.Base64()
 	if err != nil {
-		return fmt.Errorf("soroban: serialize tx: %w", err)
+		return fmt.Errorf("soroban: serialize sim tx: %w", err)
 	}
 
-	// ── 5. simulateTransaction → footprint + resource fee ────────────────────
+	// ── 5. simulateTransaction → footprint + resource fee + auth entries ──────
 	simRes, err := c.rpc.simulateTransaction(ctx, unsignedB64)
 	if err != nil {
 		return fmt.Errorf("soroban: simulate: %w", err)
@@ -240,28 +235,17 @@ func (c *Client) invokeOnce(
 		return fmt.Errorf("soroban: simulation failed: %s", simRes.Error)
 	}
 
-	// ── 6. Decode SorobanTransactionData from simulation result ───────────────
+	// ── 6. Decode SorobanTransactionData ─────────────────────────────────────
 	var sorobanData xdr.SorobanTransactionData
 	if err = xdr.SafeUnmarshalBase64(simRes.TransactionData, &sorobanData); err != nil {
 		return fmt.Errorf("soroban: decode soroban data: %w", err)
 	}
-	resourceFee, err := strconv.ParseInt(simRes.MinResourceFee, 10, 64)
-	if err != nil {
-		return fmt.Errorf("soroban: parse resource fee: %w", err)
-	}
 
-	// ── 7. Patch the XDR envelope: Soroban ext + fee + auth entries ──────────
-	// tx.ToXDR() returns xdr.TransactionEnvelope (value); .V1 is a *V1Envelope.
-	envelope := tx.ToXDR()
-	envelope.V1.Tx.Ext = xdr.TransactionExt{V: 1, SorobanData: &sorobanData}
-	// Total fee = Stellar base fee + Soroban resource fee + small buffer
-	envelope.V1.Tx.Fee = xdr.Uint32(txnbuild.MinBaseFee + uint32(resourceFee) + 1000)
-	envelope.V1.Signatures = nil // clear any pre-existing signatures
-
-	// Apply auth entries returned by simulation onto the InvokeHostFunction op.
-	// Without these, admin.require_auth() inside the contract panics (TRAPPED).
-	// For SOROBAN_CREDENTIALS_SOURCE_ACCOUNT entries no extra signing is needed —
-	// the source-account invoker auth is satisfied by the tx signature alone.
+	// ── 7. Apply auth entries + ext onto the operation ────────────────────────
+	// Setting these on the txnbuild.InvokeHostFunction before rebuilding ensures
+	// that NewTransaction bakes them into t.envelope — the canonical source of
+	// truth that tx.Sign() hashes.  This avoids the manual envelope-patching
+	// approach that can cause the signed hash to diverge from the submitted XDR.
 	if len(simRes.Results) > 0 && len(simRes.Results[0].Auth) > 0 {
 		authEntries := make([]xdr.SorobanAuthorizationEntry, 0, len(simRes.Results[0].Auth))
 		for _, authB64 := range simRes.Results[0].Auth {
@@ -271,33 +255,44 @@ func (c *Client) invokeOnce(
 			}
 			authEntries = append(authEntries, entry)
 		}
-		if len(envelope.V1.Tx.Operations) > 0 {
-			envelope.V1.Tx.Operations[0].Body.InvokeHostFunctionOp.Auth = authEntries
-		}
+		invokeOp.Auth = authEntries
 		log.Printf("[soroban] applied %d auth entr(ies) from simulation", len(authEntries))
 	}
+	// Soroban ext carries the footprint & resource budget.
+	// NewTransaction reads ResourceFee from here to compute the total fee.
+	invokeOp.Ext = xdr.TransactionExt{V: 1, SorobanData: &sorobanData}
 
-	// ── 8. Sign ───────────────────────────────────────────────────────────────
-	txHash, err := network.HashTransactionInEnvelope(envelope, c.NetworkPassphrase)
+	// ── 8. Rebuild transaction with simulation data ───────────────────────────
+	// Use the same sequence number (seq+1) but rebuild so that NewTransaction
+	// constructs t.envelope fresh from the updated invokeOp.
+	// BaseFee adds a 1000-stroop buffer on top of the minimum.
+	buildAccount := txnbuild.SimpleAccount{AccountID: adminKP.Address(), Sequence: seq + 1}
+	tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
+		SourceAccount:        &buildAccount,
+		IncrementSequenceNum: false,
+		Operations:           []txnbuild.Operation{invokeOp},
+		BaseFee:              txnbuild.MinBaseFee + 1000,
+		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewInfiniteTimeout()},
+	})
 	if err != nil {
-		return fmt.Errorf("soroban: hash tx: %w", err)
+		return fmt.Errorf("soroban: build tx: %w", err)
 	}
-	sig, err := adminKP.SignDecorated(txHash[:])
+
+	// ── 9. Sign via SDK (hashes t.envelope, same data that Base64() serialises)
+	signedTx, err := tx.Sign(c.NetworkPassphrase, adminKP)
 	if err != nil {
 		return fmt.Errorf("soroban: sign tx: %w", err)
 	}
-	envelope.V1.Signatures = []xdr.DecoratedSignature{sig}
 
-	// ── 9. Serialise signed envelope to base64 ────────────────────────────────
-	signedB64, err := xdr.MarshalBase64(envelope)
+	// ── 10. Serialise signed transaction ─────────────────────────────────────
+	signedB64, err := signedTx.Base64()
 	if err != nil {
 		return fmt.Errorf("soroban: encode signed tx: %w", err)
 	}
 
-	// ── 10. sendTransaction ───────────────────────────────────────────────────
+	// ── 11. sendTransaction ───────────────────────────────────────────────────
 	sendRes, err := c.rpc.sendTransaction(ctx, signedB64)
 	if err != nil {
-		// tx_bad_seq surfaces here for retry
 		return err
 	}
 	if sendRes.Status == "ERROR" {
@@ -309,7 +304,7 @@ func (c *Client) invokeOnce(
 
 	log.Printf("[soroban] tx submitted hash=%s status=%s", sendRes.Hash, sendRes.Status)
 
-	// ── 11. Poll until on-chain confirmed ─────────────────────────────────────
+	// ── 12. Poll until on-chain confirmed ─────────────────────────────────────
 	return c.waitConfirmed(ctx, sendRes.Hash)
 }
 

@@ -174,7 +174,7 @@ impl LeveragePool {
 
     // ── Synthetic position lifecycle — Admin only ─────────────────────────────
 
-    /// Called by the Go matching engine after off-chain order matching.
+    /// Called by the user from the frontend after computing economics off-chain.
     /// Locks `collateral_locked` from the user's free margin and records the
     /// Position on-chain for transparency and liquidation tracking.
     pub fn open_synthetic_position(
@@ -185,7 +185,7 @@ impl LeveragePool {
         collateral_token: Address,
         collateral_locked: i128,
     ) -> Result<(), Error> {
-        Self::require_admin(&e)?;
+        user.require_auth();
 
         if e.storage().persistent().has(&DataKey::Position(user.clone())) {
             return Err(Error::PositionAlreadyOpen);
@@ -210,7 +210,8 @@ impl LeveragePool {
         Ok(())
     }
 
-    /// Admin-only. Settles PnL directly against the LP pool and releases collateral.
+    /// User-callable. Settles PnL directly against the LP pool and releases collateral.
+    /// The caller provides the signed PnL (computed off-chain from the oracle close price).
     ///
     /// - pnl > 0: pool pays the winner — PoolBalance -= pnl, UserMargin += collateral + pnl
     /// - pnl < 0: pool gains from the loser — PoolBalance += |pnl|, UserMargin += collateral - |pnl|
@@ -223,7 +224,7 @@ impl LeveragePool {
         collateral_token: Address,
         pnl: i128,
     ) -> Result<Position, Error> {
-        Self::require_admin(&e)?;
+        user.require_auth();
 
         let pos_key = DataKey::Position(user.clone());
         let pos: Position = e

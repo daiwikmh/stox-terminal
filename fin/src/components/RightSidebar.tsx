@@ -176,18 +176,54 @@ export default function RightSidebar({
   const getAgentPrompt = useCallback(() => {
     return `# Stellar AI Trading Platform (Stoxy)
 
-**Step 0 — Security & Secrets (1Password)**
-This platform is 1Password-aware. OpenClaw can resolve secrets without plaintext exposure.
+**Step 0 — Choose your mode**
+Ask the user which mode they want before proceeding:
 
-1. Install the \`op\` CLI: https://developer.1password.com/docs/cli/get-started/
-2. Secret reference syntax: https://developer.1password.com/docs/cli/secret-references/
-3. Service accounts / auth: https://developer.1password.com/docs/cli/service-accounts/
-4. CLI \`op run\` reference: https://developer.1password.com/docs/cli/reference/commands/run/
-5. AI agent docs: https://developer.1password.com/docs/sdks/ai-agent/
+**Option A — Read-only (no secrets needed)**
+For market data, order book, prices, and trade history only.
+No wallet, no 1Password required. Skip straight to Step 1.
+Available endpoints: /api/bridge/pairs, /api/bridge/orderbook, /api/bridge/price, /api/bridge/offers, /api/bridge/trades, /api/bridge/trustline, /api/prices
 
-The bridge resolves secrets stored as \`op://\` URIs (e.g. \`op://StellarTrading/AdminKey/credential\`).
-Run the bridge via: \`op run --env-file=.env -- go run .\`
-To run an automated session, execute commands via: \`op run -- [command]\`
+**Option B — Full trading (secrets required)**
+For placing orders, opening leveraged positions, and submitting signed transactions.
+Requires a Stellar wallet secret key stored securely in 1Password.
+Guide the user through the full setup below before proceeding to Step 1.
+
+---
+
+**If the user chose Option B, complete ALL of the following before Step 1:**
+
+A. Install 1Password CLI — ask the user their OS first, then run:
+   - macOS:  \`brew install 1password-cli\`
+   - Linux (Debian/Ubuntu): \`curl -sS https://downloads.1password.com/linux/keys/1password.asc | sudo gpg --dearmor -o /usr/share/keyrings/1password-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" | sudo tee /etc/apt/sources.list.d/1password.list && sudo apt update && sudo apt install 1password-cli\`
+   - Windows: https://developer.1password.com/docs/cli/get-started/
+   Confirm: \`op --version\`
+
+B. Sign in: \`op signin\` (or \`op account add\` if first time)
+   Confirm: \`op vault list\`
+
+C. Store secrets in 1Password:
+   \`op vault create StellarTrading\`
+   \`op item create --vault StellarTrading --category Password --title AdminKey --field-name credential --value THEIR_SXXXX_KEY\`
+   For any other keys (API keys etc.) repeat the above with a different title.
+   Confirm: \`op item list --vault StellarTrading\`
+
+D. Update .env to use op:// references:
+   Replace: \`ADMIN_SECRET=SXXXX...\`
+   With:    \`ADMIN_SECRET=op://StellarTrading/AdminKey/credential\`
+
+E. Test resolution:
+   \`op run --env-file=.env -- printenv ADMIN_SECRET\`
+   Should print the real secret — not the op:// reference.
+
+F. Always start the bridge via:
+   \`op run --env-file=.env -- go run .\`
+
+Reference docs:
+- Get started: https://developer.1password.com/docs/cli/get-started/
+- Secret references: https://developer.1password.com/docs/cli/secret-references/
+- op run: https://developer.1password.com/docs/cli/reference/commands/run/
+- AI agent integration: https://developer.1password.com/docs/sdks/ai-agent/
 
 ---
 
@@ -462,9 +498,9 @@ Start by calling GET ${BRIDGE_URL}/api/context?token=${token} to see the user's 
               </div>
             )}
 
-            {/* ── OpenClaw: bridge terminal (unchanged) ── */}
+            {/* ── OpenClaw: bridge terminal ── */}
             {agentMode === 'openclaw' && (
-              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+              <div style={{ flex: 1, minHeight: 0, overflow: connState === 'connected' ? 'hidden' : 'auto', display: 'flex', flexDirection: 'column' }}>
                 {connState === 'disconnected' && (
                   <div className="portfolio-content">
                     <div className="portfolio-cta">
@@ -505,49 +541,58 @@ Start by calling GET ${BRIDGE_URL}/api/context?token=${token} to see the user's 
                   </div>
                 )}
 
-                {(connState === 'token_ready' || connState === 'connected') && (
+                {connState === 'token_ready' && (
                   <div className="agent-panel">
-                    {connState === 'token_ready' && (
-                      <>
-                        <div className="agent-token-display">
-                          <span className="agent-token-label">Your token:</span>
-                          <div className="agent-token-row">
-                            <code className="agent-token-value">{token}</code>
-                            <button className="agent-token-copy-btn" onClick={handleCopy}>
-                              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                            </button>
-                          </div>
-                          <span className="agent-token-hint">Copy the prompt below and paste it to your OpenClaw bot</span>
-                        </div>
-
-                        <div className="agent-config-snippet">
-                          <div className="agent-config-header">
-                            <span className="agent-config-label">Send to OpenClaw</span>
-                            <button className="agent-token-copy-btn" onClick={handleCopyConfig}>
-                              {configCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                            </button>
-                          </div>
-                          <pre className="agent-config-code">{getAgentPrompt()}</pre>
-                        </div>
-                      </>
-                    )}
-
-                    {connState === 'connected' && (
-                      <div className="agent-token-display">
-                        <div className="agent-token-row">
-                          <span className="agent-terminal-dot live" />
-                          <span className="agent-token-label" style={{ color: '#00ff94' }}>Agent Connected</span>
-                        </div>
-                        <span className="agent-token-hint">OpenClaw is actively using your trading endpoints</span>
+                    <div className="agent-token-display">
+                      <span className="agent-token-label">Your token:</span>
+                      <div className="agent-token-row">
+                        <code className="agent-token-value">{token}</code>
+                        <button className="agent-token-copy-btn" onClick={handleCopy}>
+                          {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
                       </div>
-                    )}
+                      <span className="agent-token-hint">Copy the prompt below and paste it to your OpenClaw bot</span>
+                    </div>
+
+                    <div className="agent-config-snippet">
+                      <div className="agent-config-header">
+                        <span className="agent-config-label">Send to OpenClaw</span>
+                        <button className="agent-token-copy-btn" onClick={handleCopyConfig}>
+                          {configCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                      <pre className="agent-config-code">{getAgentPrompt()}</pre>
+                    </div>
 
                     <div className="agent-terminal">
                       <div className="agent-terminal-header">
                         <span className="agent-terminal-title">Agent Logs</span>
-                        <span className={`agent-terminal-dot ${connState === 'connected' ? 'live' : ''}`} />
+                        <span className="agent-terminal-dot" />
                       </div>
                       <div className="agent-terminal-body">
+                        {logs.length === 0 && (
+                          <div className="agent-terminal-empty">Waiting for agent logs...</div>
+                        )}
+                        {logs.map((entry, i) => (
+                          <div className="agent-log-entry" key={i}>
+                            <span className="agent-log-time">{formatTime(entry.timestamp)}</span>
+                            <span className="agent-log-msg">{entry.message}</span>
+                          </div>
+                        ))}
+                        <div ref={logsEndRef} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {connState === 'connected' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                    <div className="agent-terminal" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                      <div className="agent-terminal-header">
+                        <span className="agent-terminal-title">Agent Logs</span>
+                        <span className="agent-terminal-dot live" />
+                      </div>
+                      <div className="agent-terminal-body" style={{ flex: 1, overflowY: 'auto' }}>
                         {logs.length === 0 && (
                           <div className="agent-terminal-empty">Waiting for agent logs...</div>
                         )}

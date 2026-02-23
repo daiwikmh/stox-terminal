@@ -15,6 +15,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "stox",
   description: "smart tradin on stellar",
+  icons: {
+    icon: "/headlogo.png",
+    apple: "/headlogo.png",
+  },
 };
 
 export default function RootLayout({

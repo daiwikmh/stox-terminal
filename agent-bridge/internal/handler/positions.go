@@ -8,21 +8,22 @@ import (
 
 	"agent-bridge/internal/positions"
 	"agent-bridge/internal/sdex"
-	"agent-bridge/internal/soroban"
 	"agent-bridge/internal/store"
 )
 
-// PositionsHandler handles leveraged SDEX position lifecycle.
+// PositionsHandler tracks leveraged position metadata for PnL display.
 //
-//	POST /api/positions/open   — open a leveraged long or short
-//	POST /api/positions/close  — close the caller's open position
-//	GET  /api/positions        — get the caller's current position
+// On-chain open/close calls are now made directly from the frontend via
+// Freighter wallet. The bridge stores entry price / side / leverage so
+// the frontend can compute unrealised PnL from the live oracle price.
+//
+//	POST /api/positions/open   — record a position (called after frontend signs on-chain tx)
+//	POST /api/positions/close  — remove position record (called after frontend signs close tx)
+//	GET  /api/positions        — get the caller's current position record
 type PositionsHandler struct {
-	Store           *store.Store
-	Positions       *positions.Store
-	SDEX            *sdex.Client    // nil when ADMIN_SECRET is unset
-	Soroban         *soroban.Client // nil when ADMIN_SECRET is unset
-	SettlementToken string          // Soroban USDC contract (C...)
+	Store     *store.Store
+	Positions *positions.Store
+	SDEX      *sdex.Client // nil when ADMIN_SECRET is unset
 }
 
 // ── Open position ─────────────────────────────────────────────────────────────
@@ -30,7 +31,7 @@ type PositionsHandler struct {
 type sdexOpenRequest struct {
 	Token     string  `json:"token"`
 	Side      string  `json:"side"`      // "long" | "short"
-	XLMAmount float64 `json:"xlmAmount"` // XLM to trade
+	XLMAmount float64 `json:"xlmAmount"` // XLM amount
 	Leverage  int     `json:"leverage"`  // 2–20
 }
 
@@ -41,16 +42,11 @@ type openPositionResponse struct {
 	TotalUSDC      float64 `json:"totalUSDC"`
 	CollateralUSDC float64 `json:"collateralUSDC"`
 	Leverage       int     `json:"leverage"`
-	TxHash         string  `json:"txHash,omitempty"` // only for long
 }
 
 func (h *PositionsHandler) Open(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.SDEX == nil || h.Soroban == nil {
-		http.Error(w, "ADMIN_SECRET not set — on-chain positions disabled", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -74,60 +70,24 @@ func (h *PositionsHandler) Open(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check: user must not already have an open position.
-	if existing := h.Positions.Get(req.Token); existing != nil {
-		http.Error(w, "position already open — close it first", http.StatusConflict)
-		return
-	}
-
 	ctx := r.Context()
 
-	// ── 1. Fetch current SDEX mark price ─────────────────────────────────────
-	midPrice, err := h.SDEX.GetMidPrice(ctx)
-	if err != nil {
-		log.Printf("[positions] GetMidPrice error: %v", err)
-		http.Error(w, "failed to fetch SDEX price: "+err.Error(), http.StatusBadGateway)
-		return
+	// Fetch current SDEX mark price for entry price recording.
+	var midPrice float64
+	if h.SDEX != nil {
+		var err error
+		midPrice, err = h.SDEX.GetMidPrice(ctx)
+		if err != nil {
+			log.Printf("[positions] GetMidPrice error: %v", err)
+		}
 	}
 
-	// ── 2. Calculate position economics ──────────────────────────────────────
-	// totalUSDC = XLM amount × price (= full notional)
-	// collateral = totalUSDC / leverage
 	totalUSDC := req.XLMAmount * midPrice
 	collateral := totalUSDC / float64(req.Leverage)
 
-	log.Printf("[positions] open: user=%s side=%s xlm=%.4f price=%.6f total_usdc=%.4f collateral=%.4f leverage=%dx",
-		conn.AccountID, req.Side, req.XLMAmount, midPrice, totalUSDC, collateral, req.Leverage)
+	log.Printf("[positions] record open: user=%s side=%s xlm=%.4f price=%.6f leverage=%dx",
+		conn.AccountID, req.Side, req.XLMAmount, midPrice, req.Leverage)
 
-	// ── 3. Positions are synthetic: entry/exit at SDEX oracle price ──────────
-	// Both long and short use the real SDEX mid-price for entry and exit, but
-	// execution is settled numerically from the pool — no classic USDC needed.
-
-	// ── 4. Open on-chain position (LeveragePool) ─────────────────────────────
-	debtScaled := int64(totalUSDC * float64(soroban.ScaleFactor))
-	collScaled := int64(collateral * float64(soroban.ScaleFactor))
-
-	// Extract base asset symbol ("XLM" from "XLM/USDC").
-	assetSymbol := "XLM"
-
-	// Clear any stale on-chain position before opening. If a prior position
-	// exists (e.g. from a session the bridge forgot on restart), the contract
-	// returns PositionAlreadyOpen. Attempt close_position first; if no stale
-	// position exists the simulation fails fast (~1s) without submitting a tx.
-	if cerr := h.Soroban.ClosePosition(ctx, conn.AccountID, h.SettlementToken, 0); cerr == nil {
-		log.Printf("[positions] cleared stale on-chain position for %s", conn.AccountID)
-	}
-
-	if err = h.Soroban.OpenPosition(ctx,
-		conn.AccountID, assetSymbol,
-		debtScaled, h.SettlementToken, collScaled,
-	); err != nil {
-		log.Printf("[positions] OpenPosition on-chain failed: %v", err)
-		http.Error(w, "on-chain open failed: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	// ── 5. Register in local store ────────────────────────────────────────────
 	pos := &positions.Position{
 		UserToken:      req.Token,
 		UserAddr:       conn.AccountID,
@@ -140,9 +100,6 @@ func (h *PositionsHandler) Open(w http.ResponseWriter, r *http.Request) {
 		Leverage:       req.Leverage,
 	}
 	h.Positions.Add(pos)
-
-	log.Printf("[positions] position opened: user=%s side=%s entry=%.6f",
-		conn.AccountID, req.Side, midPrice)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(openPositionResponse{
@@ -158,18 +115,13 @@ func (h *PositionsHandler) Open(w http.ResponseWriter, r *http.Request) {
 // ── Close position ────────────────────────────────────────────────────────────
 
 type closePositionResponse struct {
-	PnL        float64 `json:"pnl"`        // USDC, positive = profit
+	PnL        float64 `json:"pnl"`
 	ClosePrice float64 `json:"closePrice"`
-	TxHash     string  `json:"txHash,omitempty"`
 }
 
 func (h *PositionsHandler) Close(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.SDEX == nil || h.Soroban == nil {
-		http.Error(w, "ADMIN_SECRET not set", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -181,35 +133,21 @@ func (h *PositionsHandler) Close(w http.ResponseWriter, r *http.Request) {
 
 	pos := h.Positions.Get(req.Token)
 	if pos == nil {
-		http.Error(w, "no open position for this token", http.StatusNotFound)
+		// Not tracking this token — treat as already closed.
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(closePositionResponse{})
 		return
 	}
 
-	ctx := r.Context()
-
-	// ── 1. Get current SDEX price ─────────────────────────────────────────────
-	closePrice, err := h.SDEX.GetMidPrice(ctx)
-	if err != nil {
-		http.Error(w, "failed to fetch close price: "+err.Error(), http.StatusBadGateway)
-		return
+	var closePrice float64
+	if h.SDEX != nil {
+		closePrice, _ = h.SDEX.GetMidPrice(r.Context())
 	}
-
-	// ── 2. Calculate P&L at oracle close price (synthetic settlement) ─────────
 	pnl := pos.PnL(closePrice)
 
-	log.Printf("[positions] close: user=%s side=%s entry=%.6f close=%.6f pnl=%.4f USDC",
+	log.Printf("[positions] record close: user=%s side=%s entry=%.6f close=%.6f pnl=%.4f USDC",
 		pos.UserAddr, pos.Side, pos.EntryPrice, closePrice, pnl)
 
-	// ── 3. Settle PnL and release collateral in one on-chain call ────────────
-	// LeveragePool.close_position(user, token, pnl) settles pnl directly
-	// against the LP pool and releases the user's locked collateral.
-	pnlScaled := int64(pnl * float64(soroban.ScaleFactor))
-	if err = h.Soroban.ClosePosition(ctx, pos.UserAddr, h.SettlementToken, pnlScaled); err != nil {
-		log.Printf("[positions] ClosePosition failed: %v", err)
-		// Non-fatal: pool state may need manual review.
-	}
-
-	// ── 4. Remove from local store ────────────────────────────────────────────
 	h.Positions.Remove(req.Token)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -240,7 +178,6 @@ func (h *PositionsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch current mark price for live P&L.
 	var markPrice float64
 	if h.SDEX != nil {
 		markPrice, _ = h.SDEX.GetMidPrice(context.Background())

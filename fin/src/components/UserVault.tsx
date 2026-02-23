@@ -23,6 +23,7 @@ interface SDEXPosition {
 
 const BRIDGE_URL    = process.env.NEXT_PUBLIC_AGENT_BRIDGE_URL ?? 'http://localhost:8090';
 const LS_TOKEN_KEY  = 'uv-bridge-token';
+const LS_POS_KEY    = 'uv-open-position'; // { side, xlmAmount, entryPrice, leverage }
 
 export default function UserVault() {
   const { address, isConnected, connectWallet, signTransaction } = useWallet();
@@ -83,7 +84,7 @@ export default function UserVault() {
         const ok = await registerAddress(stored, address);
         if (ok) {
           setTradeToken(stored);
-          fetchSdexPos(stored);
+          fetchOnChainPos(address);
           return;
         }
         // Bridge doesn't recognise the token (restarted) — discard it.
@@ -104,6 +105,35 @@ export default function UserVault() {
   }, [isConnected, address, registerAddress]); // fetchSdexPos intentionally omitted (called inline)
 
   // ── Data fetching ──────────────────────────────────────────────────────────
+
+  /** Fetch position from the on-chain contract (source of truth). */
+  const fetchOnChainPos = useCallback(async (addr: string) => {
+    try {
+      const pos = await contracts.getPosition(addr);
+      if (!pos) { setSdexPos(null); return; }
+      // Merge on-chain data with local mark price for PnL display.
+      // For positions opened via the frontend, entryPrice is stored in
+      // the bridge store; fall back to fetching from bridge if available.
+      const bridgeData = tradeToken
+        ? await fetch(`${BRIDGE_URL}/api/positions?token=${tradeToken}`)
+            .then(r => r.ok ? r.json() : null).catch(() => null)
+        : null;
+      const entryPrice = bridgeData?.entryPrice ?? 0;
+      const xlmAmount  = bridgeData?.xlmAmount  ?? (pos.debt_amount / (entryPrice || 1));
+      const side       = bridgeData?.side        ?? 'long';
+      const leverage   = bridgeData?.leverage    ?? 1;
+      setSdexPos({
+        side,
+        xlmAmount,
+        entryPrice,
+        totalUSDC:      pos.debt_amount,
+        collateralUSDC: pos.collateral_locked,
+        leverage,
+        markPrice:      0, // filled by mark price state
+        unrealPnL:      0, // computed in render
+      });
+    } catch { /* ignore */ }
+  }, [tradeToken]);
 
   const fetchSdexPos = useCallback(async (tok: string) => {
     if (!tok) return;
@@ -138,16 +168,19 @@ export default function UserVault() {
     if (isConnected && address) {
       refreshBalances();
       fetchMarkPrice();
+      // Poll mark price every 15 s so it stays fresh
+      const id = setInterval(fetchMarkPrice, 15_000);
+      return () => clearInterval(id);
     }
   }, [isConnected, address, refreshBalances, fetchMarkPrice]);
 
-  // refresh sdex pos whenever tradeToken is known
-  useEffect(() => { if (tradeToken) fetchSdexPos(tradeToken); }, [tradeToken, fetchSdexPos]);
+  // refresh on-chain position whenever address is known
+  useEffect(() => { if (address) fetchOnChainPos(address); }, [address, fetchOnChainPos]);
 
   const handleRefresh = () => {
     refreshBalances();
     fetchMarkPrice();
-    if (tradeToken) fetchSdexPos(tradeToken);
+    if (address) fetchOnChainPos(address);
   };
 
   // ── Pool actions ───────────────────────────────────────────────────────────
@@ -181,43 +214,69 @@ export default function UserVault() {
     } finally { setMBusy(false); }
   };
 
-  // ── Open SDEX position ─────────────────────────────────────────────────────
+  // ── Open synthetic position (user-signed, direct contract call) ───────────
 
   const handleOpen = async () => {
-    if (!tradeToken || !tradeXLM) return;
+    if (!address || !tradeXLM || markPrice === null) return;
     setTradeBusy(true); setTradeStatus(null);
+    const xlmAmt  = parseFloat(tradeXLM);
+    const notionalUsdc = xlmAmt * markPrice;
+    const marginUsdc   = notionalUsdc / tradeLev;
     try {
-      const res = await fetch(`${BRIDGE_URL}/api/positions/open`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ token: tradeToken, side: tradeSide, xlmAmount: parseFloat(tradeXLM), leverage: tradeLev }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as SDEXPosition;
-      setTradeStatus({ ok: true, msg: `${tradeSide === 'long' ? 'Long' : 'Short'} opened @ ${data.entryPrice.toFixed(6)} USDC/XLM` });
+      await contracts.openPosition(
+        address,
+        'XLM',
+        notionalUsdc,
+        contracts.USDC_CONTRACT,
+        marginUsdc,
+        signTransaction,
+      );
+      // Persist position metadata locally so the position card survives refreshes
+      localStorage.setItem(LS_POS_KEY, JSON.stringify({
+        side: tradeSide, xlmAmount: xlmAmt, entryPrice: markPrice, leverage: tradeLev,
+      }));
+      // Record in bridge store for PnL tracking (fire-and-forget, best effort)
+      if (tradeToken) {
+        fetch(`${BRIDGE_URL}/api/positions/open`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ token: tradeToken, side: tradeSide, xlmAmount: xlmAmt, leverage: tradeLev }),
+        }).catch(() => {});
+      }
+      setTradeStatus({ ok: true, msg: `${tradeSide === 'long' ? 'Long' : 'Short'} ${tradeLev}× opened @ ${markPrice.toFixed(6)}` });
       setTradeXLM('');
-      await fetchSdexPos(tradeToken);
       refreshBalances();
+      // Refresh on-chain position after brief delay
+      setTimeout(() => { if (address) fetchOnChainPos(address); }, 3000);
     } catch (err) {
       setTradeStatus({ ok: false, msg: String(err) });
     } finally { setTradeBusy(false); }
   };
 
-  // ── Close SDEX position ────────────────────────────────────────────────────
+  // ── Close synthetic position (user-signed, direct contract call) ───────────
 
   const handleClose = async () => {
-    if (!tradeToken) return;
+    if (!address || !sdexPos) return;
     setCloseBusy(true); setTradeStatus(null);
+    // Use live mark price if available; fall back to entry price (pnl ≈ 0).
+    const closePrice = markPrice ?? sdexPos.entryPrice;
+    const pnl = sdexPos.entryPrice === 0
+      ? 0  // no entry data — close flat, collateral returned
+      : (sdexPos.side === 'long'
+          ? (closePrice - sdexPos.entryPrice) * sdexPos.xlmAmount
+          : (sdexPos.entryPrice - closePrice) * sdexPos.xlmAmount);
     try {
-      const res = await fetch(`${BRIDGE_URL}/api/positions/close`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ token: tradeToken }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as { pnl: number; closePrice: number };
-      const sign = data.pnl >= 0 ? '+' : '';
-      setTradeStatus({ ok: true, msg: `Closed @ ${data.closePrice.toFixed(6)} — PnL: ${sign}${data.pnl.toFixed(4)} USDC` });
+      await contracts.closePosition(address, contracts.USDC_CONTRACT, pnl, signTransaction);
+      // Notify bridge to drop local tracking (best effort)
+      if (tradeToken) {
+        fetch(`${BRIDGE_URL}/api/positions/close`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ token: tradeToken }),
+        }).catch(() => {});
+      }
+      const sign = pnl >= 0 ? '+' : '';
+      setTradeStatus({ ok: true, msg: `Closed @ ${closePrice.toFixed(6)} — PnL: ${sign}${pnl.toFixed(4)} USDC` });
       setSdexPos(null);
       refreshBalances();
     } catch (err) {
@@ -245,6 +304,11 @@ export default function UserVault() {
 
   const notional = tradeXLM && markPrice ? parseFloat(tradeXLM) * markPrice : 0;
   const marginReq = notional / tradeLev;
+  const liveUnrealPnL = sdexPos && markPrice !== null
+    ? (sdexPos.side === 'long'
+        ? (markPrice - sdexPos.entryPrice) * sdexPos.xlmAmount
+        : (sdexPos.entryPrice - markPrice) * sdexPos.xlmAmount)
+    : 0;
 
   return (
     <div className="uv-wrapper">
@@ -260,7 +324,7 @@ export default function UserVault() {
       {/* Tabs */}
       <div className="uv-tabs">
         <button className={`uv-tab ${tab === 'pool'  ? 'active' : ''}`} onClick={() => setTab('pool')}>Pool</button>
-        <button className={`uv-tab ${tab === 'trade' ? 'active' : ''}`} onClick={() => { setTab('trade'); fetchMarkPrice(); if (tradeToken) fetchSdexPos(tradeToken); }}>Leverage</button>
+        <button className={`uv-tab ${tab === 'trade' ? 'active' : ''}`} onClick={() => { setTab('trade'); fetchMarkPrice(); if (address) fetchOnChainPos(address); }}>Leverage</button>
       </div>
 
       <div className="uv-body">
@@ -366,11 +430,13 @@ export default function UserVault() {
                 )}
 
                 <button className="uv-btn-submit" onClick={handleOpen}
-                  disabled={tradeBusy || !tradeToken || !tradeXLM || parseFloat(tradeXLM) <= 0}
+                  disabled={tradeBusy || !tradeXLM || parseFloat(tradeXLM) <= 0 || markPrice === null}
                   style={tradeSide === 'long' ? { background: '#0d9060' } : { background: '#c0392b' }}>
                   {tradeBusy
                     ? <><Loader2 size={13} className="animate-spin" /> Opening…</>
-                    : `${tradeSide === 'long' ? 'Long' : 'Short'} ${tradeLev}× on SDEX`}
+                    : markPrice === null
+                      ? 'Loading price…'
+                      : `${tradeSide === 'long' ? 'Long' : 'Short'} ${tradeLev}×`}
                 </button>
               </>
             ) : (
@@ -382,12 +448,12 @@ export default function UserVault() {
 
                 <div className="uv-position-row"><span>Size</span><span>{sdexPos.xlmAmount.toFixed(4)} XLM</span></div>
                 <div className="uv-position-row"><span>Entry</span><span>{sdexPos.entryPrice.toFixed(6)}</span></div>
-                <div className="uv-position-row"><span>Mark</span><span>{sdexPos.markPrice.toFixed(6)}</span></div>
+                <div className="uv-position-row"><span>Mark</span><span>{markPrice !== null ? markPrice.toFixed(6) : '—'}</span></div>
                 <div className="uv-position-row"><span>Margin</span><span>{sdexPos.collateralUSDC.toFixed(4)} USDC</span></div>
                 <div className="uv-position-row">
                   <span>PnL</span>
-                  <span style={{ color: sdexPos.unrealPnL >= 0 ? '#3ecf8e' : '#e74c3c', fontWeight: 700 }}>
-                    {sdexPos.unrealPnL >= 0 ? '+' : ''}{sdexPos.unrealPnL.toFixed(4)} USDC
+                  <span style={{ color: liveUnrealPnL >= 0 ? '#3ecf8e' : '#e74c3c', fontWeight: 700 }}>
+                    {liveUnrealPnL >= 0 ? '+' : ''}{liveUnrealPnL.toFixed(4)} USDC
                   </span>
                 </div>
 

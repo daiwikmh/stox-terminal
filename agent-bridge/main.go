@@ -222,11 +222,9 @@ func main() {
 	pricesH := &handler.PricesHandler{Engine: eng}
 	adminH := &handler.AdminHandler{Soroban: sorobanClient}
 	posH := &handler.PositionsHandler{
-		Store:           s,
-		Positions:       posStore,
-		SDEX:            sdexClient,
-		Soroban:         sorobanClient,
-		SettlementToken: settlementToken,
+		Store:     s,
+		Positions: posStore,
+		SDEX:      sdexClient,
 	}
 
 	mux := http.NewServeMux()

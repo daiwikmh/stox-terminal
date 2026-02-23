@@ -1,9 +1,9 @@
 /**
  * LeveragePool contract client — stellar-sdk v13 wrapper.
  *
- * Types mirror contracts/packages/leverage_sdk/src/index.ts (generated from
- * the deployed contract).  ContractSpec XDR strings are copied verbatim from
- * the generated file so they stay in sync with the on-chain contract.
+ * Mirrors the pattern in vault_client.ts: interface + class declaration merging.
+ * Types are copied from contracts/packages/leverage_sdk/src/index.ts (generated
+ * from the deployed contract at CCI7POVWZ6F6ZGWKI5CQHJ2DPIAJC3RVLQCDUJKINGUQL4NBVEUEB2BM).
  *
  * We cannot import leverage_sdk directly because it depends on
  * @stellar/stellar-sdk@14 while fin/ uses stellar-sdk@13.
@@ -29,7 +29,7 @@ if (typeof window !== 'undefined') {
 export const LEVERAGE_CONTRACT_ID =
   'CCI7POVWZ6F6ZGWKI5CQHJ2DPIAJC3RVLQCDUJKINGUQL4NBVEUEB2BM';
 
-// ── Error table (mirrors generated Errors map) ────────────────────────────────
+// ── Error table ───────────────────────────────────────────────────────────────
 
 export const Errors = {
   1: { message: 'NotInitialized' },
@@ -42,82 +42,74 @@ export const Errors = {
   8: { message: 'InsufficientPool' },
 } as const;
 
-// ── Types (mirrors generated Position interface) ──────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface Position {
-  /** Human-readable symbol, e.g. "XLM". */
-  asset_symbol: string;
-  /** Amount of collateral locked while position is open. */
+  asset_symbol:      string;
   collateral_locked: i128;
-  /** Notional debt taken on (7-decimal-scaled). */
-  debt_amount: i128;
-  /** The user who owns this position. */
-  user: string;
+  debt_amount:       i128;
+  user:              string;
 }
 
-// ── Client (types mirror generated Client interface) ──────────────────────────
+// ── Interface (declaration-merged with class below) ───────────────────────────
 
-export class LeverageClient extends ContractClient {
-  // Method signatures mirror contracts/packages/leverage_sdk/src/index.ts.
-  // These `declare` statements give TypeScript visibility into the methods
-  // that ContractSpec attaches at runtime.
-
-  declare initialize: (
+export interface LeverageClient {
+  initialize(
     args: { admin: string },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  ): Promise<AssembledTransaction<Result<void>>>;
 
-  declare lp_deposit: (
+  lp_deposit(
     args: { user: string; token: string; amount: i128 },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  ): Promise<AssembledTransaction<Result<void>>>;
 
-  declare lp_withdraw: (
+  lp_withdraw(
     args: { user: string; token: string; amount: i128 },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  ): Promise<AssembledTransaction<Result<void>>>;
 
-  declare get_lp_share: (
+  get_lp_share(
     args: { user: string; token: string },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<i128>>;
+  ): Promise<AssembledTransaction<i128>>;
 
-  declare get_position: (
+  get_position(
     args: { user: string },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Option<Position>>>;
+  ): Promise<AssembledTransaction<Option<Position>>>;
 
-  declare close_position: (
+  close_position(
     args: { user: string; collateral_token: string; pnl: i128 },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<Position>>>;
+  ): Promise<AssembledTransaction<Result<Position>>>;
 
-  declare get_pool_balance: (
+  get_pool_balance(
     args: { token: string },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<i128>>;
+  ): Promise<AssembledTransaction<i128>>;
 
-  declare deposit_collateral: (
+  deposit_collateral(
     args: { user: string; token: string; amount: i128 },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  ): Promise<AssembledTransaction<Result<void>>>;
 
-  declare withdraw_collateral: (
+  withdraw_collateral(
     args: { user: string; token: string; amount: i128 },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  ): Promise<AssembledTransaction<Result<void>>>;
 
-  declare add_collateral_token: (
+  add_collateral_token(
     args: { token: string },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  ): Promise<AssembledTransaction<Result<void>>>;
 
-  declare get_collateral_balance: (
+  get_collateral_balance(
     args: { user: string; token: string },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<i128>>;
+  ): Promise<AssembledTransaction<i128>>;
 
-  declare open_synthetic_position: (
+  open_synthetic_position(
     args: {
       user: string;
       asset_symbol: string;
@@ -126,9 +118,12 @@ export class LeverageClient extends ContractClient {
       collateral_locked: i128;
     },
     options?: MethodOptions,
-  ) => Promise<AssembledTransaction<Result<void>>>;
+  ): Promise<AssembledTransaction<Result<void>>>;
+}
 
-  // ── ContractSpec (XDR copied verbatim from generated leverage_sdk) ───────────
+// ── Class (ContractSpec generates method implementations at runtime) ───────────
+
+export class LeverageClient extends ContractClient {
   constructor(public readonly options: ContractClientOptions) {
     super(
       new ContractSpec([

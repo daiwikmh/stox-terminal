@@ -165,6 +165,47 @@ export async function lpWithdraw(
   await signAndSubmit(tx.toXDR(), walletSign);
 }
 
+/**
+ * Open a synthetic leveraged position directly from the user's wallet.
+ * Works because the deployer's Freighter address = the contract admin,
+ * so admin.require_auth() is satisfied by the Freighter signature.
+ */
+export async function openPosition(
+  user: string,
+  assetSymbol: string,
+  debtAmount: number,      // notional USDC  (= xlmAmount × markPrice)
+  collateralToken: string,
+  collateralLocked: number, // required margin (= debtAmount / leverage)
+  walletSign: WalletSignFn,
+): Promise<void> {
+  const tx = await leverageClient(user).open_synthetic_position({
+    user,
+    asset_symbol: assetSymbol,
+    debt_amount:       toI128(debtAmount),
+    collateral_token:  collateralToken,
+    collateral_locked: toI128(collateralLocked),
+  });
+  await signAndSubmit(tx.toXDR(), walletSign);
+}
+
+/**
+ * Close the caller's open position and settle PnL against the LP pool.
+ * pnlHuman is the signed USDC profit/loss (positive = profit, negative = loss).
+ */
+export async function closePosition(
+  user: string,
+  collateralToken: string,
+  pnlHuman: number,
+  walletSign: WalletSignFn,
+): Promise<void> {
+  const tx = await leverageClient(user).close_position({
+    user,
+    collateral_token: collateralToken,
+    pnl: toI128(pnlHuman),
+  });
+  await signAndSubmit(tx.toXDR(), walletSign);
+}
+
 // ── Read operations (simulation only, no signing needed) ──────────────────────
 
 // Dummy read-only publicKey — any valid G address works for simulation

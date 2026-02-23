@@ -3,6 +3,7 @@
 import { ChevronDown, Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
+import Image from 'next/image';
 import { initWalletKit, useWallet } from '@/utils/wallet';
 
 export default function Header() {
@@ -35,7 +36,9 @@ export default function Header() {
       <div className="header-container">
         {/* Logo + compact nav */}
         <div className="flex items-center gap-3">
-          <div className="header-logo" style={{ cursor: 'pointer' }} onClick={() => router.push('/terminal')}>STOX</div>
+          <div className="header-logo" style={{ cursor: 'pointer' }} onClick={() => router.push('/terminal')}>
+            <Image src="/headlogo.png" alt="Stox" width={28} height={28} style={{ objectFit: 'contain' }} />
+          </div>
           <nav className="header-nav">
             <button
               className={`header-nav-item ${pathname === '/terminal' ? 'active' : ''}`}
