@@ -1,4 +1,4 @@
-# Stoxy — AI-Powered Leveraged Trading on Stellar
+# Stox — AI-Powered Leveraged Trading on Stellar
 
 A full-stack trading protocol built on **Stellar Soroban**. Stoxy lets users take synthetic long/short leveraged positions on XLM/USDC (and synthetic stocks) priced from the live SDEX order book, with PnL and collateral managed by on-chain smart contracts and a Go agent bridge.
 
