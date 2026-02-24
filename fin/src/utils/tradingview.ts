@@ -31,13 +31,24 @@ export interface TradingViewConfig {
  * TradingView doesn't list SDEX directly, so we use Binance equivalents where available.
  */
 const TV_SYMBOL_MAP: Record<string, string> = {
+  // Crypto
   'XLM/USDC': 'BINANCE:XLMUSDC',
-  'SRT/XLM': 'BINANCE:XLMUSDC',   // fallback — no SRT on TV
-  'SRT/USDC': 'BINANCE:XLMUSDC',  // fallback
   'XLM/USDT': 'BINANCE:XLMUSDT',
-  'AQUA/XLM': 'BINANCE:XLMUSDC',  // fallback
+  'BTC/USDC': 'BINANCE:BTCUSDC',
+  'ETH/USDC': 'BINANCE:ETHUSDC',
+  'SOL/USDC': 'BINANCE:SOLUSDC',
+  // Stocks
   'NVDA/USD': 'NASDAQ:NVDA',
   'AAPL/USD': 'NASDAQ:AAPL',
+  'TSLA/USD': 'NASDAQ:TSLA',
+  'MSFT/USD': 'NASDAQ:MSFT',
+  'GOOGL/USD': 'NASDAQ:GOOGL',
+  'AMZN/USD': 'NASDAQ:AMZN',
+  'META/USD': 'NASDAQ:META',
+  // Fallbacks
+  'SRT/XLM': 'BINANCE:XLMUSDC',
+  'SRT/USDC': 'BINANCE:XLMUSDC',
+  'AQUA/XLM': 'BINANCE:XLMUSDC',
 };
 
 export function getTradingViewSymbol(pair: string): string {

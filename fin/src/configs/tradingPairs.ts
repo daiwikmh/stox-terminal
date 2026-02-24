@@ -44,10 +44,122 @@ const AAPL_USD: TradingPair = {
   quoteLogo: '/usdc.png',
 };
 
+const BTC_USDC: TradingPair = {
+  symbol: 'BTC/USDC',
+  baseToken: 'BTC',
+  quoteToken: 'USDC',
+  price: 0,
+  change24h: 0,
+  volume24h: 0,
+  baseLogo: '/image.png',
+  quoteLogo: '/usdc.png',
+};
+
+const ETH_USDC: TradingPair = {
+  symbol: 'ETH/USDC',
+  baseToken: 'ETH',
+  quoteToken: 'USDC',
+  price: 0,
+  change24h: 0,
+  volume24h: 0,
+  baseLogo: '/image.png',
+  quoteLogo: '/usdc.png',
+};
+
+const SOL_USDC: TradingPair = {
+  symbol: 'SOL/USDC',
+  baseToken: 'SOL',
+  quoteToken: 'USDC',
+  price: 0,
+  change24h: 0,
+  volume24h: 0,
+  baseLogo: '/image.png',
+  quoteLogo: '/usdc.png',
+};
+
+const TSLA_USD: TradingPair = {
+  symbol: 'TSLA/USD',
+  baseToken: 'TSLA',
+  quoteToken: 'USD',
+  price: 0,
+  change24h: 0,
+  volume24h: 0,
+  baseLogo: '/image.png',
+  quoteLogo: '/usdc.png',
+};
+
+const MSFT_USD: TradingPair = {
+  symbol: 'MSFT/USD',
+  baseToken: 'MSFT',
+  quoteToken: 'USD',
+  price: 0,
+  change24h: 0,
+  volume24h: 0,
+  baseLogo: '/image.png',
+  quoteLogo: '/usdc.png',
+};
+
+const GOOGL_USD: TradingPair = {
+  symbol: 'GOOGL/USD',
+  baseToken: 'GOOGL',
+  quoteToken: 'USD',
+  price: 0,
+  change24h: 0,
+  volume24h: 0,
+  baseLogo: '/image.png',
+  quoteLogo: '/usdc.png',
+};
+
+const AMZN_USD: TradingPair = {
+  symbol: 'AMZN/USD',
+  baseToken: 'AMZN',
+  quoteToken: 'USD',
+  price: 0,
+  change24h: 0,
+  volume24h: 0,
+  baseLogo: '/image.png',
+  quoteLogo: '/usdc.png',
+};
+
+const META_USD: TradingPair = {
+  symbol: 'META/USD',
+  baseToken: 'META',
+  quoteToken: 'USD',
+  price: 0,
+  change24h: 0,
+  volume24h: 0,
+  baseLogo: '/image.png',
+  quoteLogo: '/usdc.png',
+};
+
 export function getTradingPairs(): TradingPair[] {
   void getCurrentNetworkId(); // keep import live
-  return [XLM_USDC, NVDA_USD, AAPL_USD];
+  return [
+    XLM_USDC,
+    BTC_USDC,
+    ETH_USDC,
+    SOL_USDC,
+    NVDA_USD,
+    AAPL_USD,
+    TSLA_USD,
+    MSFT_USD,
+    GOOGL_USD,
+    AMZN_USD,
+    META_USD,
+  ];
 }
 
 // Backward compat — static export used by legacy consumers
-export const tradingPairs: TradingPair[] = [XLM_USDC, NVDA_USD, AAPL_USD];
+export const tradingPairs: TradingPair[] = [
+  XLM_USDC,
+  BTC_USDC,
+  ETH_USDC,
+  SOL_USDC,
+  NVDA_USD,
+  AAPL_USD,
+  TSLA_USD,
+  MSFT_USD,
+  GOOGL_USD,
+  AMZN_USD,
+  META_USD,
+];
