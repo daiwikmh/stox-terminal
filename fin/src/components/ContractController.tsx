@@ -8,7 +8,7 @@ type Status = { ok: boolean; msg: string } | null;
 
 const BRIDGE_URL =
   typeof window !== 'undefined'
-    ? (process.env.NEXT_PUBLIC_BRIDGE_URL ?? 'http://localhost:8090')
+    ? (process.env.NEXT_PUBLIC_AGENT_BRIDGE_URL ?? 'http://localhost:8090')
     : 'http://localhost:8090';
 
 const ADMIN_SECRET =

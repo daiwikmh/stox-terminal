@@ -124,7 +124,7 @@ The `/pro` page in the frontend exposes the same three endpoints via a UI.
 Set these in `fin/.env.local`:
 
 ```
-NEXT_PUBLIC_BRIDGE_URL=http://localhost:8090
+NEXT_PUBLIC_AGENT_BRIDGE_URL=http://localhost:8090
 NEXT_PUBLIC_ADMIN_SECRET=your_admin_secret_here
 ```
 
