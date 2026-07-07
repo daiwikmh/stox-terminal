@@ -1,0 +1,18 @@
+# Table of contents
+
+* [README](README.md)
+* [agent-bridge](agent-bridge/README.md)
+  * [Agent-Bridge Architecture](agent-bridge/ARCHITECTURE.md)
+  * [How to Run agent-bridge](agent-bridge/HOW_TO_RUN.md)
+* [contracts](contracts/README.md)
+  * [Contract Integration Guide](contracts/INTEGRATION.md)
+  * [contextwhilebuilding](contracts/contextwhilebuilding.md)
+  * [contracts](contracts/contracts/README.md)
+    * [Stellar Soroban Contracts](contracts/contracts/CONTRACTS.md)
+  * [packages](contracts/packages/README.md)
+    * [leverage\_sdk](contracts/packages/leverage_sdk/README.md)
+    * [vault\_sdk](contracts/packages/vault_sdk/README.md)
+* [docs](docs/README.md)
+  * [docs](docs/docs/README.md)
+    * [Table of contents](docs/docs/SUMMARY.md)
+* [fin](fin/README.md)
