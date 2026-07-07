@@ -1,10 +1,34 @@
-# Stox — AI-Powered Leveraged Trading on Stellar
+<div align="center">
 
-A full-stack trading protocol built on **Stellar Soroban**. Stoxy lets users take synthetic long/short leveraged positions on XLM/USDC (and synthetic stocks) priced from the live SDEX order book, with PnL and collateral managed by on-chain smart contracts and a Go agent bridge.
+# Stox Terminal
+
+### AI-Powered Leveraged Trading on Stellar
+
+*Synthetic positions, real leverage, and on-chain PnL — no counterparty risk. Trade with an AI agent.*
+
+[![Built on Stellar](https://img.shields.io/badge/Built%20on-Stellar%20Soroban-6fbcf0?logo=stellar&logoColor=white)](https://stellar.org/)
+[![Smart Contracts: Rust/WASM](https://img.shields.io/badge/Smart%20Contracts-Rust%2FWASM-ce422b?logo=rust)](https://www.rust-lang.org/)
+[![Agent Bridge: Go](https://img.shields.io/badge/Bridge-Go%201.24-00add8?logo=go&logoColor=white)](https://golang.org/)
+[![Frontend: Next.js 15](https://img.shields.io/badge/Frontend-Next.js%2015-black?logo=next.js)](https://nextjs.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#-license)
+
+[**Live Terminal**](https://stox-trading.vercel.app/terminal) · [**Docs**](https://daiwiks-organization.gitbook.io/stox-terminal) · [**Bridge API**](#-api-overview)
+
+</div>
 
 ---
 
-## Architecture
+## What is Stox?
+
+A full-stack trading protocol built on **Stellar Soroban**. Take synthetic long/short leveraged positions on XLM, BTC, ETH, or major stocks—priced from the live SDEX order book, with PnL and collateral managed by on-chain smart contracts and a Go agent bridge. No intermediaries, no repricing delays, no counterparty oracle.
+
+Trade solo or connect an AI agent (OpenClaw) to automate execution and market analysis—the agent reads live data or executes trades with your blessing, all over a token-gated API.
+
+---
+
+## 🏗️ Architecture
+
+Two services, one contract family — separation of concerns:
 
 ```
 Browser (fin/)          agent-bridge (Go)           Stellar Network
@@ -16,11 +40,11 @@ AI agent     ──HTTP──► /api/bridge/*                LeveragePool
                         /api/prices
 ```
 
-| Layer | Stack | Purpose |
+| Layer | Stack | What it does |
 |---|---|---|
-| **Frontend** (`fin/`) | Next.js 15, TailwindCSS, TradingView | Trading terminal, AI agent UI, LP pool |
-| **Agent Bridge** (`agent-bridge/`) | Go 1.24, pure HTTP | Matching engine, Soroban controller, AI agent API |
-| **Smart Contracts** | Soroban (Rust → WASM) | On-chain collateral, PnL settlement, LP pool |
+| **Frontend** (`fin/`) | Next.js 15, TailwindCSS, TradingView | Terminal UI, live agent logs (SSE), LP dashboard, Freighter wallet integration |
+| **Agent Bridge** (`agent-bridge/`) | Go 1.24, HTTP/REST | In-process matching engine, Soroban caller, token auth, AI agent API, liquidation monitor |
+| **Smart Contracts** | Soroban (Rust → WASM) | Collateral holding, PnL computation, LP pool mechanics, trustless settlement |
 
 ---
 
@@ -46,12 +70,19 @@ TypeScript SDK bindings in `contracts/packages/vault_sdk` and `leverage_sdk` are
 
 ## Features
 
-- **SDEX Terminal** — limit and market orders on Stellar's native DEX with live TradingView charts
-- **Leveraged Positions** — 2×–20× long/short synthetic positions on XLM, BTC, ETH, SOL, NVDA, AAPL, TSLA, MSFT, GOOGL, AMZN, META
-- **On-chain PnL** — LeveragePool v3 stores `entry_price + xlm_amount + is_long`; PnL computed in the contract at close
-- **AI Agent (OpenClaw)** — token-based API for any LLM; read-only market data or full autonomous trading
-- **LP Pool** — deposit USDC as a liquidity provider and earn from trading activity
-- **Liquidation Engine** — Go process polls every 5 s; auto-liquidates positions at 90% loss threshold
+### The Terminal
+- **Live SDEX Charts** — limit and market orders on Stellar's native DEX with TradingView candlesticks, order book depth, and fill price transparency.
+- **2×–20× Leverage** — long/short synthetic positions on XLM, BTC, ETH, SOL, NVDA, AAPL, TSLA, MSFT, GOOGL, AMZN, META — without minting physical assets or fragmenting liquidity.
+- **On-chain PnL** — LeveragePool v3 stores position data in the contract; PnL is computed at close by the chain, not by an oracle or off-chain agent.
+
+### The AI Agent Layer (OpenClaw)
+- **Token-gated API** — any LLM (Claude, GPT-4, etc.) gets a session token to read market data or execute trades autonomously with your blessing.
+- **Read-only or autonomous** — watch prices and order book, or give the agent permission to place, amend, and settle trades.
+- **No secrets on the browser** — the agent bridge holds the admin key; your browser only signs user operations via Freighter. Trades are submitted by the bridge, which is yours.
+
+### For Liquidity Providers
+- **LP Pool** — deposit USDC, earn from the spread on synthetic positions that route through the pool.
+- **Auto-liquidation** — the Go bridge monitors every 5 s; positions at 90% loss are settled automatically so the pool doesn't go underwater.
 
 ---
 
@@ -70,94 +101,48 @@ TypeScript SDK bindings in `contracts/packages/vault_sdk` and `leverage_sdk` are
 
 ---
 
-## AI Agent — OpenClaw
+## The AI Agent Layer — OpenClaw
 
-OpenClaw is a token-gated bridge that lets any LLM (Claude, GPT-4, etc.) read market data or execute trades autonomously on Stoxy.
+A token-gated API that lets any LLM (Claude, GPT-4, Gemini) read market data or trade autonomously. You stay in control — the agent can only act on explicit approval.
 
 ### How it works
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      OpenClaw Workflow                          │
-└─────────────────────────────────────────────────────────────────┘
-
-  User (/terminal)
-      │
-      │  1. Click "Connect OpenClaw"
-      ▼
-  agent-bridge
-      │  POST /api/token/generate
-      │  ◄── returns { token: "oc_..." }
-      │
-      │  2. System prompt auto-generated
-      │     (token + base URL + endpoint list + 1Password instructions)
-      ▼
-  User copies prompt
-      │
-      │  3. Paste into any LLM (Claude / GPT-4 / etc.)
-      ▼
-  LLM (OpenClaw agent)
-      │
-      ├─ Read-only mode ──────────────────────────────────────────►
-      │    GET /api/bridge/price                  no secrets needed
-      │    GET /api/bridge/orderbook
-      │    GET /api/bridge/pairs
-      │    GET /api/bridge/offers
-      │    GET /api/bridge/trades
-      │
-      └─ Trading mode ────────────────────────────────────────────►
-           GET  /api/context          (view user's current pair/account)
-           POST /api/bridge/order/limit    ──► build unsigned XDR
-           POST /api/bridge/order/market   ──► build unsigned XDR
-           POST /api/bridge/trustline/build
-               │
-               │  sign XDR using keypair from 1Password
+1. User clicks "Connect OpenClaw" in /terminal
+   ▼
+2. Bridge generates token: { token: "oc_..." } + system prompt
+   ▼
+3. User pastes prompt + token into any LLM
+   ▼
+4. LLM reads prices, order book, executes trades
+   │
+   └─ Read-only: GET /api/bridge/price, /orderbook, /pairs, /trades
+   │
+   └─ Trading: POST /api/bridge/order/{limit|market}
+               → builds unsigned XDR
+               → (you or agent signs with 1Password keypair)
+               → POST /api/bridge/tx/submit
+               → Horizon → Stellar
                ▼
-           POST /api/bridge/tx/submit  ──► Horizon ──► Stellar Network
-               │
-               ▼
-           POST /api/logs              (agent posts execution log)
-               │
-               ▼
-  SSE stream (/api/logs/stream?token=...)
-      │
-      ▼
-  User sees live logs in /terminal right sidebar
+5. Agent posts logs to /api/logs
+   │
+   └─ User sees live logs in /terminal right sidebar (SSE stream)
 ```
 
 ### Modes
 
-| Mode | What the agent can do | Credentials required |
+| Mode | Capabilities | Credentials |
 |---|---|---|
-| **Read-only** | Prices, order book, pairs, trade history, open offers | Session token only |
-| **Trading** | All read-only + place orders, cancel orders, submit signed XDRs | Session token + Stellar keypair in 1Password |
+| **Read-only** | Prices, order book, pairs, trade history, open offers | `oc_...` token |
+| **Trading** | Above + place/amend orders, submit signed transactions | Token + Stellar keypair (1Password) |
 
-### Quick start
+### Quick Start
 
-1. Open `/terminal` → right sidebar → **Agent** tab → **OpenClaw** → **Connect**
-2. Copy the generated session token and system prompt
-3. Paste the prompt into your LLM
-4. For trading mode, complete the [1Password setup](#1password-configuration) below
+1. **Open `/terminal`** → right sidebar → **Agent** → **OpenClaw** → **Connect**
+2. **Copy** the generated token + system prompt
+3. **Paste** into Claude, GPT-4, or your LLM of choice
+4. **For trading:** complete the [1Password setup](#1password-configuration) to auto-sign transactions
 
-### Agent endpoints
-
-All requests require `X-Agent-Token: <token>` header.
-
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/context` | Current user view + account state |
-| GET | `/api/bridge/pairs` | All trading pairs |
-| GET | `/api/bridge/orderbook?symbol=` | Order book snapshot |
-| GET | `/api/bridge/price?symbol=` | Mid price |
-| GET | `/api/bridge/offers?account=` | User's open SDEX offers |
-| GET | `/api/bridge/trades?account=` | Trade history |
-| POST | `/api/bridge/order/limit` | Build limit order XDR |
-| POST | `/api/bridge/order/market` | Build market order XDR |
-| POST | `/api/bridge/order/cancel` | Build cancel XDR |
-| POST | `/api/bridge/trustline/build` | Build trustline XDR |
-| POST | `/api/bridge/tx/submit` | Submit a signed XDR |
-
----
 
 ## 1Password Configuration
 
@@ -177,203 +162,19 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1pass
   sudo tee /etc/apt/sources.list.d/1password.list
 sudo apt update && sudo apt install 1password-cli
 
-# Verify
-op --version
-```
-
-### 2. Sign in
-
-```bash
-op signin
-```
-
-### 3. Store your Stellar secret key
-
-```bash
-op item create \
-  --vault StellarTrading \
-  --category Password \
-  --title AdminKey \
-  --field-name credential \
-  --value SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-```
-
-### 4. Reference it in your `.env`
-
-In `agent-bridge/.env`, replace the raw secret with an `op://` URI:
-
-```env
-ADMIN_SECRET=op://StellarTrading/AdminKey/credential
-```
-
-### 5. Run the bridge with secret injection
-
-```bash
-op run --env-file=agent-bridge/.env -- /usr/local/go/bin/go run .
-```
-
-`op run` resolves all `op://` references before the process starts. The secret is present in memory only — it is never written to disk or logged.
-
-### Why 1Password?
-
-- The raw secret key never appears in your shell history, environment exports, or log output
-- Rotating a compromised key requires one `op item edit` — no code changes
-- The same pattern works in CI/CD: replace `op run` with the 1Password GitHub Actions integration
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Go 1.24+ (`/usr/local/go/bin/go`)
-- Node.js 18+
-- [Freighter wallet](https://freighter.app/) browser extension
-- Funded Stellar testnet account ([faucet](https://laboratory.stellar.org/#account-creator))
-
-### 1. Clone
-
-```bash
-git clone https://github.com/your-org/stoxy.git
-cd stoxy
-```
-
-### 2. Configure the bridge
-
-Create `agent-bridge/.env`:
-
-```env
-ADMIN_SECRET=S...                  # Stellar secret key (or op:// reference)
-AGENT_VAULT_ID=CCNK5O3FFCOC5KEBRK6ORUUPPHYDUITTH2XCLLG7P2IBQRX2L6HXJFWG
-LEVERAGE_POOL_ID=CCKZICAZIICUMVVSX2YHITOCV2E5LO4YQKCO5VYAS7G3PZYLN5N32UXL
-SETTLEMENT_TOKEN=CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
-SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
-HORIZON_URL=https://horizon-testnet.stellar.org
-NETWORK_PASSPHRASE=Test SDF Network ; September 2015
-FRONTEND_URL=http://localhost:3000
-PORT=8090
-```
-
-### 3. Start the bridge
-
-```bash
-# Without 1Password
-cd agent-bridge
-export $(cat .env | xargs) && /usr/local/go/bin/go run .
-
-# With 1Password (recommended)
-op run --env-file=agent-bridge/.env -- /usr/local/go/bin/go run .
-
-# Listening on :8090
-```
-
-### 4. Configure the frontend
-
-Create `fin/.env.local`:
-
-```env
-NEXT_PUBLIC_AGENT_BRIDGE_URL=http://localhost:8090
-```
-
-### 5. Start the frontend
-
-```bash
-cd fin
-npm install
-npm run dev
-# http://localhost:3000
-```
-
-Open `/terminal` in your browser and connect Freighter.
-
----
-
-## Project Structure
-
-```
-stoxy/
-├── agent-bridge/           Go HTTP server (port 8090)
-│   ├── internal/
-│   │   ├── handler/        HTTP handlers (orders, positions, admin, …)
-│   │   ├── matching/       In-process CLOB + liquidation engine
-│   │   ├── soroban/        Contract controller (simulate → sign → submit)
-│   │   ├── sdex/           Horizon SDEX client
-│   │   └── store/          In-memory session store
-│   └── main.go
-├── fin/                    Next.js frontend
-│   └── src/
-│       ├── app/            Pages: /terminal, /pro
-│       ├── components/     UI components
-│       ├── configs/        Trading pairs config
-│       └── utils/          Wallet, bridge, TradingView helpers
-└── contracts/
-    └── packages/
-        ├── vault_sdk/      TypeScript bindings for AgentVault
-        └── leverage_sdk/   TypeScript bindings for LeveragePool
-```
-
----
-
-## API Overview
-
-Base URL (local): `http://localhost:8090`
-Base URL (deployed): `https://fin-14qn.onrender.com`
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| POST | `/api/token/generate` | none | Create AI agent session token |
-| GET | `/api/logs/stream?token=` | token | SSE log stream |
-| GET/POST | `/api/context` | token | Sync UI state / account watcher |
-| GET/POST | `/api/orders` | token | Order book snapshot / place order |
-| GET | `/api/prices` | none | All mark prices |
-| `*` | `/api/bridge/*` | token | Proxy to Next.js SDEX API |
-| POST | `/api/positions/open` | token | Record open position |
-| POST | `/api/positions/close` | token | Record close position |
-| GET | `/api/positions` | token | Get position + unrealised PnL |
-| POST | `/api/admin/settle` | Bearer | `AgentVault.settle_pnl` |
-| POST | `/api/admin/position` | Bearer | `LeveragePool.open_synthetic_position` |
-| POST | `/api/admin/position/close` | Bearer | `LeveragePool.close_position` |
-
-Full API docs: `agent-bridge/ARCHITECTURE.md`
-
----
-
-## Design Decisions
-
-- **Admin key never touches the browser** — all privileged Soroban calls are gated behind the Go bridge. The browser signs only user operations (deposit, withdraw) via Freighter.
-- **Synthetic positions** — no physical asset fragmentation; pure economic exposure via on-chain state.
-- **On-chain PnL (v3)** — `close_position` computes PnL in the contract from stored position data, removing the need for a trusted off-chain oracle at close time.
-- **Mutex-serialised Soroban calls** — a single `sync.Mutex` in `soroban.Client` prevents concurrent admin calls from racing on the account sequence number.
-- **1Password for secrets** — `ADMIN_SECRET` is stored as an `op://` reference; `op run` injects the real value at process start, keeping it out of shell history and logs.
-
----
-
-## Documentation
-
-| Section | Location |
-|---|---|
-| Bridge architecture & API | `agent-bridge/ARCHITECTURE.md` |
-| Smart contract source | `contracts/contracts/agent_vault/` · `contracts/contracts/leverage_pool/` |
-| TypeScript SDK bindings | `contracts/packages/vault_sdk/` · `contracts/packages/leverage_sdk/` |
-| User-facing docs | [GitBook](https://daiwiks-organization.gitbook.io/stox-terminal) |
-
----
-
-## Deployment
-
-### Live
-
-| Service | Network | Platform | URL |
-|---|---|---|---|
-| **Frontend** | Mainnet + Testnet | Vercel | `https://stox-trading.vercel.app` |
-| **Agent Bridge** | Testnet | Render | `https://fin-14qn.onrender.com` |
-
-### Self-hosting
+### Self-host
 
 **Bridge:**
-- Build: `cd agent-bridge && go build -tags netgo -ldflags '-s -w' -o app .`
-- Start: `./agent-bridge/app`
-- Port: `8090`
-- Set `FRONTEND_URL` and `ALLOWED_ORIGIN` in `.env` for your domain.
+```bash
+cd agent-bridge && go build -tags netgo -ldflags '-s -w' -o app .
+./app  # port :8090
+```
+---
 
-**Frontend:** Deploy `fin/` to Vercel with `NEXT_PUBLIC_AGENT_BRIDGE_URL` pointing to your bridge URL.
+## 📄 License
+
+Released under the **MIT License**.
+
+<div align="center">
+<sub>Built on <a href="https://stellar.org/">Stellar</a> · <a href="https://soroban.stellar.org/">Soroban</a> · <a href="https://www.rust-lang.org/">Rust</a></sub>
+</div>
